@@ -1,0 +1,152 @@
+/* Tauri native window overrides */
+
+/* Product window: fill Tauri frame. Prototype .stage was a centered mock phone/card. */
+html[data-native="1"],
+html[data-native="1"] body,
+html[data-native="1"] #root {
+  width: 100%;
+  height: 100%;
+}
+
+html[data-native="1"],
+html[data-native="1"] body {
+  background: var(--shell-0);
+}
+
+html[data-native="1"] body {
+  display: block;
+  place-items: unset;
+  padding: 0;
+  min-height: 100%;
+  overflow: hidden;
+}
+
+html[data-native="1"] .stage {
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+  gap: 0;
+}
+
+html[data-native="1"] .app-shell {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border: 0;
+  box-shadow: none;
+  overflow: hidden;
+  background: var(--shell-0);
+}
+
+/* macOS: system window clip + traffic lights (same as Activity Monitor) */
+html[data-native="1"][data-platform="mac"] .app-shell {
+  border-radius: 0;
+}
+
+html[data-native="1"][data-platform="mac"] .titlebar {
+  padding-left: 56px;
+}
+
+/* Windows 11: 8px DWM-style corners, caption buttons on the right */
+html[data-native="1"][data-platform="win"] {
+  background: var(--shell-0);
+}
+
+html[data-native="1"][data-platform="win"] .app-shell {
+  border-radius: 8px;
+}
+
+html[data-native="1"][data-platform="win"][data-maximized] .app-shell,
+html[data-native="1"][data-platform="linux"][data-maximized] .app-shell {
+  border-radius: 0;
+}
+
+html[data-native="1"][data-platform="win"] .titlebar {
+  padding: 0 0 0 12px;
+}
+
+/* Linux CSD: 12px like GNOME/libadwaita */
+html[data-native="1"][data-platform="linux"] {
+  background: var(--shell-0);
+}
+
+html[data-native="1"][data-platform="linux"] .app-shell {
+  border-radius: 12px;
+}
+
+html[data-native="1"][data-platform="linux"] .titlebar {
+  padding: 0 0 0 12px;
+}
+
+html[data-native="1"] #surface-main,
+html[data-native="1"] #surface-settings {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+html[data-native="1"] .main-full,
+html[data-native="1"] .main-split {
+  flex: 1;
+  min-height: 0;
+}
+
+html[data-native="1"] .app-shell::before {
+  display: none;
+}
+
+html[data-native="1"] .titlebar {
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+html[data-native="1"] .ambient-glow {
+  display: block;
+  top: -22%;
+  left: -12%;
+  width: 50%;
+  height: 50%;
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  filter: blur(100px);
+}
+
+html[data-native="1"][data-connection="needs-login"] .ambient-glow,
+html[data-native="1"][data-connection="disconnected"] .ambient-glow,
+html[data-native="1"][data-connection="reconnecting"] .ambient-glow {
+  background: color-mix(in srgb, var(--brand-blue) 10%, transparent);
+}
+
+html[data-theme="dark"][data-native="1"][data-connection="needs-login"] .ambient-glow,
+html[data-theme="dark"][data-native="1"][data-connection="disconnected"] .ambient-glow,
+html[data-theme="dark"][data-native="1"][data-connection="reconnecting"] .ambient-glow {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+html[data-native="1"][data-connection="connected"] .ambient-glow {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+html[data-native="1"] .welcome-card::before {
+  display: none;
+}
+
+html[data-native="1"] .welcome-card {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+html[data-native="1"] .main-full {
+  padding: 0;
+}
+
+html[data-native="1"] #surface-settings {
+  position: relative;
+  inset: auto;
+  background: transparent;
+  backdrop-filter: none;
+}

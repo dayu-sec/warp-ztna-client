@@ -1,0 +1,28 @@
+[package]
+name = "warp-ztna-err"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Operation-error facade over orion-error (pingora-style ergonomics)"
+
+[dependencies]
+orion-error.workspace = true
+
+[lints]
+workspace = true
+
+[[example]]
+name = "basic_or_err"
+path = "examples/basic_or_err.rs"
+
+[[example]]
+name = "domain_lift"
+path = "examples/domain_lift.rs"
+
+[[example]]
+name = "rewrap_and_context"
+path = "examples/rewrap_and_context.rs"
+
+[[example]]
+name = "cli_print"
+path = "examples/cli_print.rs"

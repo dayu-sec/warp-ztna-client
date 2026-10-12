@@ -1,0 +1,32 @@
+Warp ZTNA 安装说明（macOS）
+
+本构建未做 Apple 签名与公证。系统首次打开时可能拦住，按下面的顺序做即可。
+
+一、先装 Warp ZTNA 引擎服务（必做）
+  把本窗口里的 WarpZTNA-….pkg 双击安装。
+  若双击被拦（「无法打开，因为 Apple 无法检查其是否包含恶意软件」），改用终端：
+    sudo installer -pkg ~/Downloads/WarpZTNA-….pkg -target /
+  装完复查：
+    /usr/local/lib/warp-ztna/netbird version
+    /usr/local/lib/warp-ztna/netbird status
+
+二、再装应用
+  把 Warp ZTNA 拖进 Applications（本窗口里的 Applications 快捷方式）。
+  首次打开若被拦，二选一：
+    a) 终端执行后正常打开：
+         sudo xattr -dr com.apple.quarantine "/Applications/Warp ZTNA.app"
+    b) 打开「系统设置 → 隐私与安全性」，在底部点「仍要打开」。
+  打开后在界面里用企业 SSO 登录。
+  若界面显示「本机服务未运行，请先启动服务」，说明第一步没做完。
+
+三、省事一步（可选）
+  下载完 dmg 后先执行一次，之后挂载与安装就不会被拦：
+    xattr -d com.apple.quarantine ~/Downloads/WarpZTNA-….dmg
+
+运维备注
+  机器入网凭据（setup key）在管理台「路由入网」页签发。
+  预置入网：安装前把 KEY=VALUE（SETUP_KEY / MANAGEMENT_URL）写进 /etc/warp-ztna/enroll.conf，
+  权限 0600、属主 root；.pkg 的 postinstall 会在装完引擎后自动发起入网。
+  本机已有同类组网客户端时本包会先替换它（停用并移除其服务、命令与桌面应用；其配置与状态目录保留）。
+  已装过引擎服务时重跑本包即升级（停旧服务 → 换引擎 → 重启），state 与配置保留、本机入网身份不变。
+  卸载：用 install.sh --uninstall（见运维手册）；/var/lib/warp-ztna 会保留。

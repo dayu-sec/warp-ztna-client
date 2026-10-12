@@ -1,0 +1,6 @@
+packages:
+  - "agent/warp-ztna-app"
+  - "packages/foundation/tooling"
+
+onlyBuiltDependencies:
+  - esbuild

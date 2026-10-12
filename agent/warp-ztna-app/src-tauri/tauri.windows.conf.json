@@ -1,0 +1,28 @@
+{
+  "bundle": {
+    "windows": {
+      "wix": {
+        "upgradeCode": "992378a4-855d-5caf-8a47-f343151f1c2e",
+        "template": "wix/main.wxs",
+        "fragmentPaths": ["wix/engine.wxs"],
+        "componentRefs": ["WarpZtnaEngine", "WarpZtnaStateDir"]
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "零通",
+        "width": 912,
+        "height": 659,
+        "minWidth": 520,
+        "minHeight": 520,
+        "visible": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true
+      }
+    ]
+  }
+}

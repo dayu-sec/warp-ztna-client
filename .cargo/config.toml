@@ -1,0 +1,5 @@
+[alias]
+xtest = "test --workspace --all-targets"
+xcheck = "check --workspace --all-targets"
+xclippy = "clippy --workspace --all-targets -- -D warnings"
+

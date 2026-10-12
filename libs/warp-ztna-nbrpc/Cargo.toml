@@ -1,0 +1,27 @@
+[package]
+name = "warp-ztna-nbrpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "gRPC client for the local mesh agent (NetBird daemon DaemonService)"
+
+[dependencies]
+hyper-util = { version = "0.1", features = ["tokio"] }
+prost = { workspace = true }
+prost-types = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3.1"
+tonic-build = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

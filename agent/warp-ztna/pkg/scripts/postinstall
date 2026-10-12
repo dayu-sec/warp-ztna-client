@@ -1,0 +1,73 @@
+#!/bin/sh
+set -eu
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+BIN="/usr/local/lib/warp-ztna/netbird"
+CONF="/etc/warp-ztna/enroll.conf"
+BIN_DIR="/usr/local/lib/warp-ztna"
+STATE_DIR="/var/lib/warp-ztna"
+CONF_DIR="/etc/warp-ztna"
+LOG_DIR="/var/log/warp-ztna"
+LOG_FILE="$LOG_DIR/client.log"
+
+mkdir -p "$BIN_DIR" "$STATE_DIR" "$CONF_DIR" "$LOG_DIR"
+chmod 0755 "$BIN_DIR"
+chmod 0700 "$STATE_DIR"
+chmod 0750 "$CONF_DIR"
+chmod 0750 "$LOG_DIR"
+
+if [ -f /Library/LaunchDaemons/warp-ztna.plist ]; then
+  echo "Warp ZTNA：检测到既有 warp-ztna 服务，按升级处理（state 保留）：停服 → 换二进制 → 重装服务 → 启动。"
+  "$BIN" service stop --service warp-ztna || true
+  "$BIN" service uninstall --service warp-ztna || true
+fi
+
+"$BIN" service install --service warp-ztna --log-file "$LOG_FILE" --log-level info \
+  --service-env "NB_STATE_DIR=$STATE_DIR,NB_ENABLE_LOCAL_FORWARDING=true" \
+  || { echo "Warp ZTNA：service install 失败（退出码 $?）。" >&2; exit 1; }
+"$BIN" service start --service warp-ztna \
+  || { echo "Warp ZTNA：service start 失败（退出码 $?）。" >&2; exit 1; }
+
+if [ ! -f "$CONF" ]; then
+  echo "Warp ZTNA：未请求入网。装完后的两条引擎命令（原文，不新增命令面）："
+  echo "  机器入网：$BIN up --setup-key-file <文件> --management-url <URL>"
+  echo "  交互登录：$BIN login --no-browser"
+  echo "（.pkg 的 postinstall 读不到环境变量与 stdin，预置入网请把 KEY=VALUE 写进 ${CONF}，0600、root 所有。）"
+  exit 0
+fi
+
+CONF_META="$(stat -f '%Su %Lp' "$CONF")"
+case "$CONF_META" in
+  "root 600") ;;
+  *)
+    echo "Warp ZTNA：$CONF 必须是 root 所有且权限 0600（当前 ${CONF_META}），已跳过入网。"
+    exit 0
+    ;;
+esac
+
+SETUP_KEY="$(sed -n 's/^SETUP_KEY=//p' "$CONF" | head -n 1)"
+MANAGEMENT_URL="$(sed -n 's/^MANAGEMENT_URL=//p' "$CONF" | head -n 1)"
+
+if [ -z "$SETUP_KEY" ]; then
+  echo "Warp ZTNA：$CONF 里没有 SETUP_KEY，已跳过入网。"
+  exit 0
+fi
+
+if [ -z "$MANAGEMENT_URL" ]; then
+  echo "Warp ZTNA：$CONF 里有 SETUP_KEY 但没有 MANAGEMENT_URL，已跳过入网——引擎不带该参数时会打它内置的公有云默认地址（不是本部署的管理服务器），本处签发的 key 在那边无效；补上 MANAGEMENT_URL 后重跑入网命令。"
+  exit 0
+fi
+
+KEY_TMP="$(mktemp)"
+chmod 0600 "$KEY_TMP"
+printf '%s\n' "$SETUP_KEY" > "$KEY_TMP"
+trap 'rm -f "$KEY_TMP"' EXIT INT TERM
+
+set -- "$BIN" up --setup-key-file "$KEY_TMP" --management-url "$MANAGEMENT_URL"
+
+if "$@"; then
+  echo "Warp ZTNA：已按 $CONF 发起入网；用 $BIN status 复查连接状态。"
+else
+  echo "警告：入网命令未成功（引擎与服务已装好）；请稍后重试 $BIN up，或检查 ${CONF}。"
+fi
+exit 0

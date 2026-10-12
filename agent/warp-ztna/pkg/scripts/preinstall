@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+if [ -f /Library/LaunchDaemons/warp-ztna.plist ]; then
+  exit 0
+fi
+
+if ! command -v netbird >/dev/null 2>&1; then
+  exit 0
+fi
+
+NB_BIN="$(command -v netbird)"
+echo "Warp ZTNA：检测到同类组网客户端，安装将先替换它。"
+echo "将停用并移除：${NB_BIN} 及其系统服务与桌面应用。"
+echo "其配置与状态目录保留。"
+
+"$NB_BIN" service stop --service netbird || true
+"$NB_BIN" service uninstall --service netbird || true
+launchctl bootout system/netbird 2>/dev/null || true
+rm -f /Library/LaunchDaemons/netbird.plist
+pkill -f "NetBird UI.app" 2>/dev/null || true
+rm -rf "/Applications/NetBird.app" "/Applications/NetBird UI.app"
+rm -f /usr/local/bin/netbird /opt/homebrew/bin/netbird
+rm -f /var/run/netbird.sock
+
+exit 0

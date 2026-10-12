@@ -1,0 +1,18 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "零通",
+        "width": 912,
+        "height": 659,
+        "minWidth": 520,
+        "minHeight": 520,
+        "visible": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true
+      }
+    ]
+  }
+}

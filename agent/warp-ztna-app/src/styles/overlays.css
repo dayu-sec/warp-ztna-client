@@ -1,0 +1,325 @@
+/* Modal overlays + toast */
+
+.form-actions.split {
+  width: 100%;
+}
+
+.form-actions.split .btn {
+  flex: 1;
+}
+
+/* Add Profile — Gemini layout: left-stacked card, not the centered generic modal */
+.overlay-form {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 72px 24px 24px 220px;
+  background: rgba(4, 6, 11, 0.6);
+  backdrop-filter: blur(12px);
+}
+
+html[data-platform="win"] .overlay-form,
+html[data-platform="linux"] .overlay-form {
+  padding-top: 64px;
+}
+
+.profile-dialog {
+  width: 28rem;
+  max-width: calc(100% - 8px);
+  background: var(--surface-solid);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  text-align: left;
+  box-shadow: var(--shadow);
+  animation: pop 0.22s var(--ease-out);
+}
+
+.profile-dialog-head h3 {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-title);
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+.profile-dialog-head p {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.profile-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ssh-dialog-reason {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+}
+
+.ssh-dialog-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.ssh-dialog-command code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-caption);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.profile-dialog .field {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.profile-dialog .field span {
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.profile-dialog .field input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  background: var(--bg-page-0);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text);
+  font-family: var(--font);
+}
+
+.profile-dialog .field input#pf-url {
+  font-family: var(--mono);
+  font-size: var(--fs-ui);
+}
+
+.profile-dialog .field input::placeholder {
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.profile-dialog .field input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.profile-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 16px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+.profile-dialog-foot .btn-ghost {
+  border-color: transparent;
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+.profile-dialog-foot .btn-primary {
+  min-width: 112px;
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+@media (max-width: 720px) {
+  .overlay-form {
+    padding: 56px 16px 16px;
+  }
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.field input {
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Overlay / modal */
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 11, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 40;
+  backdrop-filter: blur(8px);
+  animation: fade 0.18s var(--ease);
+}
+
+.overlay.overlay-form {
+  display: flex;
+  place-items: unset;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 72px 24px 24px 220px;
+  background: rgba(4, 6, 11, 0.6);
+  backdrop-filter: blur(12px);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal {
+  background: var(--surface-solid);
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  padding: 28px 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 300px;
+  max-width: 380px;
+  text-align: center;
+  box-shadow: var(--shadow);
+  animation: pop 0.22s var(--ease-out);
+}
+
+.modal-sso {
+  max-width: 400px;
+}
+
+.modal h3 {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-title);
+  letter-spacing: -0.02em;
+}
+
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.modal-icon.warn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(245, 165, 36, 0.16);
+  color: var(--warn);
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 20px;
+  box-shadow: 0 0 0 6px rgba(245, 165, 36, 0.08);
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.toast {
+  position: absolute;
+  top: calc(var(--titlebar-h) + 10px);
+  right: 16px;
+  z-index: 45;
+  background: var(--surface-solid);
+  border: 1px solid var(--border-strong);
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: var(--fs-ui);
+  font-weight: 550;
+  line-height: 1.4;
+  max-width: min(420px, calc(100% - 32px));
+  box-shadow: var(--shadow);
+  animation: toast-in 0.28s var(--ease-out);
+  border-left: 3px solid var(--accent);
+  backdrop-filter: blur(12px);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

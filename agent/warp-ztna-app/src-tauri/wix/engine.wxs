@@ -1,0 +1,45 @@
+<?if $(sys.BUILDARCH)="x86"?>
+    <?define Win64 = "no" ?>
+<?else?>
+    <?define Win64 = "yes" ?>
+<?endif?>
+
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <DirectoryRef Id="TARGETDIR">
+            <Directory Id="CommonAppDataFolder" />
+        </DirectoryRef>
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="WarpZtnaEngine" Guid="*" Win64="$(var.Win64)">
+                <File Id="WarpZtnaEngineExe" Source="$(env.TAURI_ENGINE_EXE)" KeyPath="yes" />
+                <ServiceInstall Id="WarpZtnaService"
+                                Name="warp-ztna"
+                                DisplayName="Warp ZTNA Engine"
+                                Description="Warp ZTNA routing node engine (official NetBird binary)"
+                                Type="ownProcess"
+                                Start="auto"
+                                ErrorControl="normal"
+                                Account="LocalSystem"
+                                Arguments="service run --log-level info --daemon-addr npipe://netbird --log-file C:\ProgramData\warp-ztna\client.log" />
+                <ServiceControl Id="WarpZtnaServiceControl"
+                                Name="warp-ztna"
+                                Start="install"
+                                Stop="both"
+                                Remove="uninstall"
+                                Wait="yes" />
+                <RegistryValue Root="HKLM"
+                               Key="SYSTEM\CurrentControlSet\Services\warp-ztna"
+                               Name="Environment"
+                               Type="multiString"
+                               Value="NB_STATE_DIR=C:\ProgramData\warp-ztna[~]NB_ENABLE_LOCAL_FORWARDING=true[~]NB_SERVICE=warp-ztna" />
+            </Component>
+        </DirectoryRef>
+        <DirectoryRef Id="CommonAppDataFolder">
+            <Directory Id="WarpZtnaStateFolder" Name="warp-ztna">
+                <Component Id="WarpZtnaStateDir" Guid="177f507c-4e8d-4688-aa6b-d5780beebc82" Win64="$(var.Win64)">
+                    <CreateFolder />
+                </Component>
+            </Directory>
+        </DirectoryRef>
+    </Fragment>
+</Wix>

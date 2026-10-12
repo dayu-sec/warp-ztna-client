@@ -1,0 +1,249 @@
+name: Release client
+
+on:
+  push:
+    tags: ["client-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只构建与组装资产，不建 Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  archives:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          expected="client-v${v}"
+          if [ "${GITHUB_REF_NAME}" != "$expected" ]; then
+            echo "tag 名与 VERSION 不一致：tag=${GITHUB_REF_NAME}，VERSION=${v}（应为 ${expected}）" >&2
+            exit 1
+          fi
+      - run: |
+          set -eu
+          mkdir -p dist/netbird-upstream
+          version="$(tr -d '[:space:]' < agent/warp-ztna/NETBIRD_VERSION)"
+          for pair in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
+            os="${pair%%_*}"
+            arch="${pair#*_}"
+            curl -fsSL -o "dist/netbird-upstream/netbird_${version}_${os}_${arch}.tar.gz" \
+              "https://github.com/netbirdio/netbird/releases/download/v${version}/netbird_${version}_${os}_${arch}.tar.gz"
+          done
+      - run: sh agent/warp-ztna/build-archives.sh --upstream dist/netbird-upstream --out dist/client-archives
+      - run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          release_base="https://github.com/dayu-sec/warp-ztna-client/releases/download"
+          mkdir -p dist/client-pkg/linux dist/client-pkg/macos dist/client-pkg/windows
+          sed "s/^WARP_VERSION=.*/WARP_VERSION=\"$v\"/" agent/warp-ztna/install.sh > dist/client-pkg/linux/install.sh
+          sed "s/^WARP_VERSION=.*/WARP_VERSION=\"$v\"/" agent/warp-ztna/install.sh > dist/client-pkg/macos/install.sh
+          sed "s/^WARP_VERSION=.*/WARP_VERSION=\"$v\"/" agent/warp-ztna-app/install-app.sh > dist/client-pkg/macos/install-app.sh
+          sed "s/^WARP_VERSION=.*/WARP_VERSION=\"$v\"/" agent/warp-ztna-app/install-app-linux.sh > dist/client-pkg/linux/install-app.sh
+          sed "s/^\$WarpVersion = .*/\$WarpVersion = \"$v\"/" agent/warp-ztna/install.ps1 > dist/client-pkg/windows/install.ps1
+          chmod +x dist/client-pkg/linux/install.sh dist/client-pkg/macos/install.sh dist/client-pkg/macos/install-app.sh dist/client-pkg/linux/install-app.sh
+          for f in dist/client-pkg/linux/install.sh dist/client-pkg/macos/install.sh dist/client-pkg/macos/install-app.sh dist/client-pkg/linux/install-app.sh; do
+            sh -n "$f"
+            grep -q "^WARP_VERSION=\"$v\"$" "$f" || { echo "版本注入失败：$f" >&2; exit 1; }
+            grep -qF "$release_base" "$f" || { echo "取件基址缺失：$f" >&2; exit 1; }
+            if grep -q "pkg.warp-ztna.internal" "$f"; then echo "脚本仍含旧内网域名：$f" >&2; exit 1; fi
+          done
+          grep -q "^\$WarpVersion = \"$v\"$" dist/client-pkg/windows/install.ps1 || { echo "版本注入失败：install.ps1" >&2; exit 1; }
+          grep -qF "$release_base" dist/client-pkg/windows/install.ps1 || { echo "取件基址缺失：install.ps1" >&2; exit 1; }
+          if grep -q "pkg.warp-ztna.internal" dist/client-pkg/windows/install.ps1; then echo "脚本仍含旧内网域名：install.ps1" >&2; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-archives
+          path: dist/client-archives
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-pkg
+          path: dist/client-pkg
+
+  macos:
+    needs: archives
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-archives
+          path: dist/client-archives
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - run: cd dist/client-archives && shasum -a 256 -c checksums.txt
+      - run: |
+          set -eu
+          cd agent/warp-ztna-app
+          pnpm exec tauri build --features custom-protocol --target aarch64-apple-darwin
+          pnpm exec tauri build --features custom-protocol --target x86_64-apple-darwin
+      - run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          sh agent/warp-ztna/build-macpkg.sh --arch arm64 \
+            --archive "dist/client-archives/warp-ztna_${v}_darwin_arm64.tar.gz" --out dist/client-macos
+          sh agent/warp-ztna/build-macpkg.sh --arch amd64 \
+            --archive "dist/client-archives/warp-ztna_${v}_darwin_amd64.tar.gz" --out dist/client-macos
+          sh agent/warp-ztna-app/build-dmg.sh --arch arm64 \
+            --app "target/aarch64-apple-darwin/release/bundle/macos/Warp ZTNA.app" \
+            --nodepkg "dist/client-macos/WarpZTNA-Service-${v}-arm64.pkg" --out dist/client-macos
+          sh agent/warp-ztna-app/build-dmg.sh --arch amd64 \
+            --app "target/x86_64-apple-darwin/release/bundle/macos/Warp ZTNA.app" \
+            --nodepkg "dist/client-macos/WarpZTNA-Service-${v}-amd64.pkg" --out dist/client-macos
+          ( cd dist/client-macos && shasum -a 256 *.pkg *.dmg > checksums-macos.txt )
+      - run: sh agent/warp-ztna/tests/verify-macos-artifacts.sh dist/client-macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-macos
+          path: dist/client-macos
+
+  windows:
+    needs: archives
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-archives
+          path: dist/client-archives
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          mkdir -p build/engine
+          tar -xzf "dist/client-archives/warp-ztna_${v}_windows_amd64.tar.gz" -C build/engine
+          test -f build/engine/netbird.exe
+          echo "TAURI_ENGINE_EXE=$(cygpath -w "$PWD/build/engine/netbird.exe")" >> "$GITHUB_ENV"
+        shell: bash
+      - run: |
+          set -eu
+          cd agent/warp-ztna-app
+          pnpm exec tauri build --features custom-protocol --bundles msi
+        shell: bash
+      - run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          mkdir -p dist/client-windows
+          cp target/release/bundle/msi/*.msi "dist/client-windows/WarpZTNA-App-${v}-amd64.msi"
+          ( cd dist/client-windows && sha256sum *.msi > checksums-windows.txt )
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-windows
+          path: dist/client-windows
+
+  linux:
+    needs: archives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-archives
+          path: dist/client-archives
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev rpm ruby-dev liblzma-dev
+      - run: sudo gem install --no-document fpm
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          set -eu
+          cd agent/warp-ztna-app
+          pnpm exec tauri build --features custom-protocol --bundles deb
+      - run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          sh agent/warp-ztna-app/build-linuxpkg.sh --arch amd64 \
+            --deb target/release/bundle/deb/*.deb \
+            --archive "dist/client-archives/warp-ztna_${v}_linux_amd64.tar.gz" --out dist/client-linux
+          ( cd dist/client-linux && sha256sum *.deb *.rpm > checksums-linux.txt )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-linux
+          path: dist/client-linux
+
+  release:
+    needs: [archives, macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-archives
+          path: dist/client-archives
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-macos
+          path: dist/client-macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-windows
+          path: dist/client-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-linux
+          path: dist/client-linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-pkg
+          path: dist/client-pkg
+      - run: sh deploy/client-pkg/build-assets.sh --dist dist --out dist/assets
+      - run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          tar -czf "dist/warp-ztna_${v}_scripts.tar.gz" -C dist client-pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-assets
+          path: dist/assets
+      - if: startsWith(github.ref, 'refs/tags/') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          assets="dist/assets/* dist/warp-ztna_${v}_scripts.tar.gz"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $assets --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" $assets --generate-notes
+          fi
+      - run: |
+          echo "分发面：本仓 Release client-v<版本> 的资产（checksums.txt 覆盖全部资产）"
+          echo "取件基址：https://github.com/dayu-sec/warp-ztna-client/releases/download"

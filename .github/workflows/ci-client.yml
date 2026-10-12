@@ -1,0 +1,103 @@
+name: CI client
+
+on:
+  pull_request:
+    paths:
+      - "agent/**"
+      - "libs/**"
+      - "packages/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "deploy/client-pkg/**"
+      - ".github/workflows/ci-client.yml"
+      - ".github/workflows/release-client.yml"
+  push:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - "libs/**"
+      - "packages/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "deploy/client-pkg/**"
+      - ".github/workflows/ci-client.yml"
+      - ".github/workflows/release-client.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r --if-present --filter "./agent/**" typecheck
+      - run: pnpm -r --if-present --filter "./agent/**" test
+      - run: pnpm -r --if-present --filter "./agent/**" build
+
+  desktop-rust:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: cargo fmt -p warp-ztna-app -- --check
+      - run: cargo clippy --locked -p warp-ztna-app --all-targets -- -D warnings
+      - run: cargo test --locked -p warp-ztna-app
+
+  guard-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          pinned="$(tr -d 'v[:space:]' < agent/warp-ztna/NETBIRD_VERSION)"
+          supported="$(sed -n 's/.*SUPPORTED_NETBIRD_MINOR: &str = "\([^"]*\)".*/\1/p' libs/warp-ztna-nbrpc/src/lib.rs)"
+          test -n "$pinned"
+          test -n "$supported"
+          case "$pinned" in
+            "$supported".*) ;;
+            *) echo "客户端引擎钉 $pinned 不在 nbrpc 支持范围 $supported.x"; exit 1 ;;
+          esac
+      - name: 包版本一致性（VERSION ↔ bundle 元数据）
+        run: |
+          set -eu
+          v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
+          test -n "$v"
+          got="$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' agent/warp-ztna-app/src-tauri/tauri.conf.json)"
+          if [ "$got" != "$v" ]; then
+            echo "版本不一致：tauri.conf.json 是 '${got}'，应为 '${v}'" >&2
+            exit 1
+          fi
+
+  client-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: sh agent/warp-ztna/tests/smoke.sh

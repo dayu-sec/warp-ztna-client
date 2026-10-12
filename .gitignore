@@ -1,0 +1,11 @@
+/target
+/dist
+/node_modules
+**/node_modules
+**/dist
+**/.vite
+*.tsbuildinfo
+.env
+.env.*
+.DS_Store
+*.log

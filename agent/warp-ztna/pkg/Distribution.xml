@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>Warp ZTNA 引擎服务</title>
+  <organization>com.dy-sec</organization>
+  <options hostArchitectures="@ARCH@" customize="never" require-scripts="false"/>
+  <domains enable_localSystem="true" enable_currentUserHome="false" enable_anywhere="false"/>
+  <readme file="Readme.html" mime-type="text/html"/>
+  <choices-outline>
+    <line choice="default">
+      <line choice="com.dy-sec.warpztna"/>
+    </line>
+  </choices-outline>
+  <choice id="default"/>
+  <choice id="com.dy-sec.warpztna" visible="false">
+    <pkg-ref id="com.dy-sec.warpztna"/>
+  </choice>
+  <pkg-ref id="com.dy-sec.warpztna" version="@VERSION@" onConclusion="none">component.pkg</pkg-ref>
+</installer-gui-script>

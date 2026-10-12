@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSUserNotificationsUsageDescription</key>
+  <string>会话即将过期或连接状态变化时发送通知</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>点击资源行的 SSH 按钮时，需要在新终端窗口中打开登录会话；登录完成后，需要关闭浏览器中已经完成的登录页</string>
+</dict>
+</plist>

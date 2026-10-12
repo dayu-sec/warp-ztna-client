@@ -1,0 +1,551 @@
+/* Window chrome, titlebar, shared controls */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.stage:focus {
+  outline: none;
+}
+
+/* Shell */
+.app-shell {
+  width: min(940px, 100%);
+  height: min(620px, 92vh);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 40%),
+    linear-gradient(160deg, var(--shell-0), var(--shell-1));
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  transition: box-shadow 0.4s var(--ease), border-color 0.4s var(--ease);
+}
+
+.app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.7;
+}
+
+html[data-theme="light"] .app-shell::before {
+  background-image:
+    linear-gradient(to right, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+}
+
+.ambient-glow {
+  position: absolute;
+  top: -18%;
+  left: -12%;
+  width: 52%;
+  height: 48%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  filter: blur(90px);
+  pointer-events: none;
+  z-index: 0;
+  transition: background 0.8s var(--ease), opacity 0.8s;
+  opacity: 0.55;
+}
+
+html[data-connection="disconnected"] .ambient-glow,
+html[data-connection="reconnecting"] .ambient-glow,
+html[data-connection="needs-login"] .ambient-glow {
+  opacity: 0.28;
+  background: color-mix(in srgb, var(--brand-blue) 18%, transparent);
+}
+
+html[data-connection="connected"] .ambient-glow {
+  opacity: 0.7;
+}
+
+#surface-main,
+#surface-settings {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-theme="light"] .app-shell {
+  background: linear-gradient(180deg, #ffffff 0%, var(--shell-1) 100%);
+}
+
+html[data-connection="connected"] .app-shell {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-strong));
+  box-shadow: var(--shadow), 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 0 60px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+html[data-connection="connecting"] .app-shell,
+html[data-connection="reconnecting"] .app-shell {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border-strong));
+}
+
+#surface-main,
+#surface-settings {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#surface-settings[hidden],
+#surface-main[hidden],
+[hidden] {
+  display: none !important;
+}
+
+/* Titlebar — drag region for Tauri; chrome differs per OS */
+.titlebar {
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+  backdrop-filter: blur(12px);
+  flex-shrink: 0;
+  user-select: none;
+  gap: 8px;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+html[data-theme="light"] .titlebar {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.titlebar-left,
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 48px;
+}
+
+.titlebar .tb-btn,
+.titlebar .btn,
+.titlebar .win-controls,
+.titlebar .theme-btn {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Native-like caption buttons (Windows / Linux) */
+.win-controls {
+  display: none;
+  align-items: stretch;
+  height: var(--titlebar-h);
+  margin-right: -12px;
+  margin-left: 4px;
+}
+
+.win-ctrl {
+  width: 46px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.win-ctrl svg {
+  display: block;
+}
+
+.win-ctrl:hover {
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--text);
+}
+
+.win-ctrl.close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+html[data-platform="mac"] .win-controls {
+  display: none;
+}
+
+html[data-platform="win"] .win-controls,
+html[data-platform="linux"] .win-controls {
+  display: flex;
+}
+
+html[data-platform="win"] .app-shell {
+  border-radius: 8px;
+}
+
+html[data-platform="linux"] .app-shell {
+  border-radius: 12px;
+}
+
+html[data-platform="win"] .titlebar {
+  padding: 0 0 0 14px;
+}
+
+html[data-platform="linux"] .titlebar {
+  padding: 0 0 0 14px;
+}
+
+html[data-platform="linux"] .win-ctrl {
+  width: 42px;
+  border-radius: 0;
+}
+
+html[data-platform="linux"] .win-ctrl.close:hover {
+  background: #c01c28;
+}
+
+html[data-platform="win"] .tb-btn.icon,
+html[data-platform="linux"] .tb-btn.icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+html[data-platform="win"] .btn,
+html[data-platform="linux"] .btn {
+  border-radius: 8px;
+}
+
+.tb-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tb-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.tb-btn:active {
+  transform: scale(0.96);
+}
+
+.tb-btn.icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.tb-btn.icon svg {
+  display: block;
+  opacity: 0.72;
+}
+
+.tb-btn.icon:hover svg {
+  opacity: 1;
+}
+
+.titlebar-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  width: auto;
+}
+
+.titlebar-back svg {
+  opacity: 0.72;
+}
+
+.titlebar-back:hover svg {
+  opacity: 1;
+}
+
+.welcome-logo-wrap,
+.about-logo-wrap {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.logo-halo {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-soft), transparent 68%);
+  opacity: 0.95;
+  transition: opacity 0.35s, background 0.35s, transform 0.35s;
+  pointer-events: none;
+}
+
+.logo-halo.soft {
+  inset: -10px;
+  opacity: 0.75;
+}
+
+.ico-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.ico-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.ico-btn.is-ok {
+  color: var(--accent-text);
+}
+
+.hover-note {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 32em;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-soft);
+  color: var(--text);
+  text-align: center;
+  text-decoration: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s var(--ease-out);
+  z-index: 3;
+}
+
+.btn-contrast {
+  background: #f4f6fb;
+  color: #0b1220;
+  border: 0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.btn-contrast:hover svg {
+  transform: translateX(3px);
+}
+
+.btn-contrast svg {
+  transition: transform 0.18s var(--ease);
+}
+
+html[data-theme="light"] .btn-contrast {
+  background: #0f172a;
+  color: #fff;
+}
+
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chip-type {
+  margin-left: auto;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  padding: 3px 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.ico-btn.launch,
+.ico-btn.ssh {
+  color: var(--accent-text);
+  background: var(--accent-softer);
+}
+
+.ico-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ico-btn .ico-check {
+  display: none;
+}
+
+.ico-btn.is-ok .ico-copy {
+  display: none;
+}
+
+.ico-btn.is-ok .ico-check {
+  display: block;
+}
+
+/* Settings — same window chrome as main; no second header/shell */
+#surface-settings {
+  position: relative;
+  inset: auto;
+  background: transparent;
+  backdrop-filter: none;
+  z-index: 1;
+  animation: view-in 0.28s var(--ease-out);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: var(--fs-ui);
+  font-weight: var(--fw-title);
+  font-family: var(--font);
+  cursor: pointer;
+  transition: transform 0.12s, box-shadow 0.2s, background 0.2s, border-color 0.2s, filter 0.2s;
+  letter-spacing: 0;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--brand-grad);
+  color: var(--on-accent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.btn-primary:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 8px 24px var(--glow);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.btn-ghost:hover {
+  background: var(--surface-2);
+}
+
+.btn-lg {
+  padding: 8px 22px;
+  font-size: var(--fs-body);
+  border-radius: 8px;
+}
+
+.btn-sm {
+  padding: 6px 11px;
+  font-size: var(--fs-secondary);
+  border-radius: 9px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.hint {
+  font-size: var(--fs-secondary);
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    height: min(780px, 94vh);
+  }
+}
+
+.sr-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (pointer: coarse) {
+  .tb-btn.icon,
+  .switch,
+  .s-nav,
+  .btn,
+  .res-row .res-actions {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
+  .win-ctrl {
+    width: 52px;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .chip-type,
+  .count-badge {
+    outline: 1px solid currentColor;
+  }
+}
+
+.theme-btn,
+.more-btn {
+  width: 28px;
+  height: 28px;
+}

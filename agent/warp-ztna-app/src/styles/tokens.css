@@ -1,0 +1,210 @@
+/* Design tokens, theme, connection, reset */
+
+/* 零通 / Warp-ZTNA Desktop
+   Brand: logo T = #1E4FD6; ring coral #FF5A1F / lime #C6F23A
+   Cross-platform: data-platform = mac | win | linux */
+:root,
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --brand-blue: #1e4fd6;
+  --bg-page-0: #07090e;
+  --bg-page-1: #0c1118;
+  --shell-0: #11161f;
+  --shell-1: #0b0f16;
+  --surface: rgba(255, 255, 255, 0.035);
+  --surface-solid: #141a24;
+  --surface-2: rgba(255, 255, 255, 0.055);
+  --surface-3: rgba(255, 255, 255, 0.09);
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --text: #f5f5f7;
+  --text-secondary: #c7c7cc;
+  --muted: #8e8e93;
+  --primary: #1e4fd6;
+  --warn: #f5a524;
+  --danger: #ff5c5c;
+  --live: #34d399;
+  --radius: 16px;
+  --radius-sm: 11px;
+  --radius-xs: 8px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei UI", system-ui, sans-serif;
+  /* Match official NetBird client settings type scale */
+  --fs-wordmark: 20px;
+  --fw-wordmark: 600;
+  --fs-title: 16px;
+  --fw-title: 600;
+  --fs-body: 14px;
+  --fs-ui: 13px;
+  --fs-secondary: 12px;
+  --fs-caption: 11px;
+  --fw-ui: 500;
+  --mono: "SF Mono", "Cascadia Mono", "Segoe UI Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --shadow: 0 28px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-soft: 0 8px 28px rgba(0, 0, 0, 0.28);
+  --titlebar-h: 44px;
+  --hit: 32px;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-page-0: #e8ecf3;
+  --bg-page-1: #f4f6fa;
+  --shell-0: #ffffff;
+  --shell-1: #f6f8fb;
+  --surface: #ffffff;
+  --surface-solid: #ffffff;
+  --surface-2: #f1f3f8;
+  --surface-3: #e8edf4;
+  --border: rgba(15, 23, 42, 0.07);
+  --border-strong: rgba(15, 23, 42, 0.12);
+  --text: #0f172a;
+  --text-secondary: #334155;
+  --muted: #64748b;
+  --live: #0e9f6e;
+  --shadow: 0 22px 56px rgba(15, 23, 42, 0.1), 0 0 0 1px rgba(15, 23, 42, 0.04);
+  --shadow-soft: 0 6px 18px rgba(15, 23, 42, 0.07);
+}
+
+/* Connection brand — coral (off) / lime (on). Not NetBird teal. */
+html[data-connection="disconnected"],
+html[data-connection="connecting"],
+html[data-connection="reconnecting"],
+html[data-connection="needs-login"] {
+  --accent: #ff5a1f;
+  --accent-2: #ff7a45;
+  --accent-text: #ff5a1f;
+  --accent-soft: rgba(255, 90, 31, 0.16);
+  --accent-softer: rgba(255, 90, 31, 0.08);
+  --glow: rgba(255, 90, 31, 0.42);
+  --on-accent: #ffffff;
+  --brand-grad: linear-gradient(180deg, #ff7a45 0%, #ff5a1f 55%, #e84a12 100%);
+}
+
+html[data-connection="connected"] {
+  --accent: #c6f23a;
+  --accent-2: #d4ff62;
+  --accent-text: #c6f23a;
+  --accent-soft: rgba(198, 242, 58, 0.16);
+  --accent-softer: rgba(198, 242, 58, 0.08);
+  --glow: rgba(198, 242, 58, 0.38);
+  --on-accent: #0b1220;
+  --brand-grad: linear-gradient(180deg, #d8ff5c 0%, #c6f23a 52%, #a8d420 100%);
+}
+
+/* Lime as text fails on white — darker ink, keep bright fills */
+html[data-theme="light"][data-connection="connected"] {
+  --accent-text: #3f8608;
+  --accent-soft: rgba(74, 154, 16, 0.12);
+  --accent-softer: rgba(74, 154, 16, 0.07);
+}
+
+html[data-theme="light"][data-connection="disconnected"],
+html[data-theme="light"][data-connection="connecting"],
+html[data-theme="light"][data-connection="reconnecting"],
+html[data-theme="light"][data-connection="needs-login"] {
+  --accent-text: #d4450f;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  font-weight: 400;
+  font-synthesis: none;
+  color: var(--text);
+  background:
+    radial-gradient(880px 460px at 10% -10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 56%),
+    radial-gradient(640px 380px at 92% 0%, color-mix(in srgb, var(--brand-blue) 16%, transparent), transparent 52%),
+    linear-gradient(165deg, var(--bg-page-0), var(--bg-page-1));
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px 16px 40px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  transition: background 0.45s var(--ease);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, #fff);
+  outline-offset: 2px;
+}
+
+button,
+input,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+img {
+  max-width: 100%;
+}
+
+/* ===== Platform chrome ===== */
+html[data-platform="mac"] {
+  --titlebar-h: 44px;
+  --radius: 16px;
+  --font: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+    sans-serif;
+}
+
+html[data-platform="win"] {
+  --titlebar-h: 36px;
+  --radius: 8px;
+  --radius-sm: 8px;
+  --font: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+
+html[data-platform="linux"] {
+  --titlebar-h: 40px;
+  --radius: 12px;
+  --font: Inter, "Noto Sans", "Noto Sans CJK SC", "Noto Sans SC", "Segoe UI", system-ui, sans-serif;
+}
+
+html[data-connection="error"] {
+  --accent: #ff5a1f;
+  --accent-2: #ff7a45;
+  --accent-text: #ff5a1f;
+  --accent-soft: rgba(255, 90, 31, 0.16);
+  --accent-softer: rgba(255, 90, 31, 0.08);
+  --glow: rgba(255, 90, 31, 0.42);
+  --on-accent: #ffffff;
+  --brand-grad: linear-gradient(180deg, #ff7a45 0%, #ff5a1f 55%, #e84a12 100%);
+}
+
+html[data-theme="light"][data-connection="error"] {
+  --accent-text: #d4450f;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
