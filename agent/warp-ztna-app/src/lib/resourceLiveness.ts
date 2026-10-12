@@ -13,7 +13,11 @@ export function livenessState(rows: ResourceRow[]): LivenessState {
 export function livenessFlips(previous: LivenessState | null, rows: ResourceRow[]): LivenessFlip[] {
   if (!previous) return [];
   return rows
-    .filter((row) => previous.has(row.key) && previous.get(row.key) !== row.live)
+    .filter((row) =>
+      previous.has(row.key)
+        ? previous.get(row.key) !== row.live
+        : row.live && row.source === "ticket",
+    )
     .map((row) => ({ address: row.address, live: row.live }));
 }
 

@@ -4,7 +4,12 @@ import { test } from "node:test";
 import type { ResourceRow } from "../api/access";
 import { describeFlips, livenessFlips, livenessState } from "./resourceLiveness.ts";
 
-function row(key: string, address: string, live: boolean): ResourceRow {
+function row(
+  key: string,
+  address: string,
+  live: boolean,
+  source: ResourceRow["source"] = "ticket",
+): ResourceRow {
   return {
     key,
     address,
@@ -15,7 +20,7 @@ function row(key: string, address: string, live: boolean): ResourceRow {
     live,
     pending: !live,
     ssh: null,
-    source: "ticket",
+    source,
   };
 }
 
@@ -51,11 +56,29 @@ test("a row that goes offline reports a loss", () => {
   ]);
 });
 
-test("rows the previous pass never saw are not a change", () => {
+test("a ticket row seen for the first time while active reports an activation", () => {
   const previous = livenessState([row("a", "10.0.0.1", true)]);
 
   assert.deepEqual(
     livenessFlips(previous, [row("a", "10.0.0.1", true), row("b", "10.0.0.2", true)]),
+    [{ address: "10.0.0.2", live: true }],
+  );
+});
+
+test("a first-seen row that is not active yet reports nothing", () => {
+  const previous = livenessState([row("a", "10.0.0.1", true)]);
+
+  assert.deepEqual(
+    livenessFlips(previous, [row("a", "10.0.0.1", true), row("b", "10.0.0.2", false)]),
+    [],
+  );
+});
+
+test("a first-seen group row reports nothing", () => {
+  const previous = livenessState([row("a", "10.0.0.1", true)]);
+
+  assert.deepEqual(
+    livenessFlips(previous, [row("a", "10.0.0.1", true), row("b", "10.0.0.2", true, "group")]),
     [],
   );
 });

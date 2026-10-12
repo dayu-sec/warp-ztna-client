@@ -338,7 +338,7 @@ export function App() {
                 onOpenDest={(address) => void agent.openDest(address)}
                 onSsh={(row) => void agent.openSsh(row)}
                 onRequestAccess={() => void (isTauri() ? native.openPortal("request") : undefined)}
-                onRefreshAssets={() => void agent.loadResources()}
+                onRefreshAssets={() => void agent.loadResources(true)}
               />
             )}
           </div>

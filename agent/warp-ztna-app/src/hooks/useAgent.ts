@@ -88,6 +88,9 @@ export function useAgent(
   const signedIn = connection !== "needs-login";
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
+  const mainGateRef = useRef(mainGate);
+  mainGateRef.current = mainGate;
+  const windowHiddenRef = useRef(windowHidden);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
   const trRef = useRef(tr);
@@ -130,7 +133,7 @@ export function useAgent(
   const applyStatusRef = useRef(applyStatus);
   applyStatusRef.current = applyStatus;
 
-  const loadResources = useCallback(async () => {
+  const loadResources = useCallback(async (manual = false) => {
     if (!isTauri()) return;
     const runId = ++assetsRunRef.current;
     setResourcesBusy(true);
@@ -150,6 +153,8 @@ export function useAgent(
         setGroupGrants([]);
         const message = formatInvokeError(cause) || trRef.current("toast.failed");
         showToastRef.current(message);
+      } else if (manual) {
+        showToastRef.current(formatInvokeError(cause) || trRef.current("toast.failed"));
       }
     } finally {
       if (runId === assetsRunRef.current) setResourcesBusy(false);
@@ -346,6 +351,14 @@ export function useAgent(
   }, [mainGate, refresh, windowHidden]);
 
   useEffect(() => {
+    const cameBackToVisible = windowHiddenRef.current && !windowHidden;
+    windowHiddenRef.current = windowHidden;
+    if (!cameBackToVisible || !isTauri()) return;
+    if (mainGateRef.current !== "home" || connectionRef.current !== "connected") return;
+    void loadResources();
+  }, [windowHidden, loadResources]);
+
+  useEffect(() => {
     if (!isTauri() || mainGate !== "home" || !signedIn) return;
     if (userEmail !== "—") return;
     void loadUserEmail();
@@ -374,11 +387,11 @@ export function useAgent(
   }, []);
 
   useEffect(() => {
-    if (!isTauri() || mainGate !== "home" || !connected || windowHidden) return;
+    if (!isTauri() || mainGate !== "home" || !connected) return;
     if (assetRefreshMin <= 0) return;
     const id = window.setInterval(() => void loadResources(), assetRefreshMin * 60_000);
     return () => window.clearInterval(id);
-  }, [mainGate, connected, windowHidden, assetRefreshMin, loadResources]);
+  }, [mainGate, connected, assetRefreshMin, loadResources]);
 
   useEffect(() => {
     if (!isTauri() || !pendingApproval || mainGate !== "welcome") return;
