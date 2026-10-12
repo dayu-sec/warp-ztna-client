@@ -168,6 +168,7 @@ pub struct ApiConfig {
     pub ssh_ca_request_timeout: Duration,
     pub ssh_manual_cert_max_ttl_seconds: i64,
     pub client_pkg_base_url: String,
+    pub client_pkg_latest_release_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +387,10 @@ impl ApiConfig {
             client_pkg_base_url: value(
                 "WARP_CLIENT_PKG_BASE_URL",
                 "https://github.com/dayu-sec/warp-ztna-client/releases/download",
+            ),
+            client_pkg_latest_release_url: url_switch(
+                optional("WARP_CLIENT_PKG_LATEST_RELEASE_URL").as_deref(),
+                DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL,
             ),
         })
     }
@@ -752,6 +757,23 @@ fn value(name: &'static str, default: &str) -> String {
     optional(name).unwrap_or_else(|| default.to_owned())
 }
 
+const DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/dayu-sec/warp-ztna-client/releases/latest";
+
+fn url_switch(raw: Option<&str>, default: &'static str) -> Option<String> {
+    match raw {
+        None => Some(default.to_owned()),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }
+    }
+}
+
 fn parse_allowed_origins(name: &'static str, default: &str) -> Result<Vec<String>, ConfigError> {
     let raw = match env::var(name) {
         Ok(value) => value,
@@ -849,6 +871,20 @@ mod tests {
             ),
             "https://github.com/dayu-sec/warp-ztna-client/releases/download"
         );
+    }
+
+    #[test]
+    fn client_pkg_latest_release_url_defaults_to_the_public_client_repo() {
+        assert_eq!(
+            url_switch(None, DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL),
+            Some(DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL.to_owned())
+        );
+        assert_eq!(
+            url_switch(Some("https://example.com/latest"), DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL),
+            Some("https://example.com/latest".to_owned())
+        );
+        assert_eq!(url_switch(Some("  "), DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL), None);
+        assert_eq!(url_switch(Some("off"), DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL), None);
     }
 
     #[test]
