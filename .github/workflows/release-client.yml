@@ -242,7 +242,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $assets --clobber
           else
-            gh release create "$GITHUB_REF_NAME" $assets --notes-from-tag --draft
+            gh release create "$GITHUB_REF_NAME" $assets --title "$GITHUB_REF_NAME" --notes-from-tag --draft
           fi
       - run: |
           echo "分发面：本仓 Release client-v<版本> 的资产（checksums.txt 覆盖全部资产）"
