@@ -212,6 +212,7 @@ pub struct DingTalkBridgeConfig {
     pub oidc_signing_key_file: String,
     pub dingtalk_client_id: String,
     pub dingtalk_client_secret: SecretString,
+    pub dingtalk_dept_ids: Vec<String>,
     pub dingtalk_login_scope: String,
 }
 
@@ -468,6 +469,10 @@ impl DingTalkBridgeConfig {
             oidc_signing_key_file: required("OIDC_SIGNING_KEY_FILE")?,
             dingtalk_client_id: required("DINGTALK_CLIENT_ID")?,
             dingtalk_client_secret: SecretString::from(required("DINGTALK_CLIENT_SECRET")?),
+            dingtalk_dept_ids: match value("DINGTALK_DEPT_IDS", "") {
+                raw if raw.trim().is_empty() => Vec::new(),
+                raw => parse_csv_list("DINGTALK_DEPT_IDS", &raw)?,
+            },
             dingtalk_login_scope: value("DINGTALK_LOGIN_SCOPE", DEFAULT_DINGTALK_LOGIN_SCOPE),
         })
     }
