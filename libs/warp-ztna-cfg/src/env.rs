@@ -56,6 +56,16 @@ pub const DEFAULT_SSH_CA_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 /// Default provisioner name registered in `step-ca` for the adapter.
 pub const DEFAULT_STEP_CA_PROVISIONER_NAME: &str = "warp-ztna-ssh-ca";
 
+pub const DEFAULT_DINGTALK_BRIDGE_BIND_ADDR: &str = "0.0.0.0:8080";
+
+pub const DEFAULT_OIDC_CLIENT_ID: &str = "keycloak-dingtalk-broker";
+
+pub const DEFAULT_OIDC_CODE_TTL_SECONDS: u64 = 300;
+
+pub const DEFAULT_OIDC_TOKEN_TTL_SECONDS: u64 = 3_600;
+
+pub const DEFAULT_DINGTALK_LOGIN_SCOPE: &str = "openid corpid Contact.User.Read";
+
 /// Default base prefix for `NetBird` entities managed by Warp.
 pub const DEFAULT_NETBIRD_MANAGED_PREFIX: &str = "warp-ztna";
 
@@ -188,6 +198,21 @@ pub struct SshCaConfig {
 #[derive(Debug, Clone)]
 pub struct MigrationConfig {
     pub database_url: SecretString,
+}
+
+#[derive(Debug, Clone)]
+pub struct DingTalkBridgeConfig {
+    pub bind_addr: SocketAddr,
+    pub shutdown: ShutdownConfig,
+    pub oidc_issuer_url: String,
+    pub oidc_client_id: String,
+    pub oidc_client_secret: SecretString,
+    pub oidc_code_ttl: Duration,
+    pub oidc_token_ttl: Duration,
+    pub oidc_signing_key_file: String,
+    pub dingtalk_client_id: String,
+    pub dingtalk_client_secret: SecretString,
+    pub dingtalk_login_scope: String,
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +448,27 @@ impl SshCaConfig {
                 "STEP_CA_REQUEST_TIMEOUT_SECONDS",
                 DEFAULT_SSH_CA_REQUEST_TIMEOUT_SECONDS,
             )?,
+        })
+    }
+}
+
+impl DingTalkBridgeConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        Ok(Self {
+            bind_addr: parse("WARP_DINGTALK_BRIDGE_BIND_ADDR", DEFAULT_DINGTALK_BRIDGE_BIND_ADDR)?,
+            shutdown: shutdown_config_from_env()?,
+            oidc_issuer_url: required("OIDC_ISSUER_URL")?,
+            oidc_client_id: value("OIDC_CLIENT_ID", DEFAULT_OIDC_CLIENT_ID),
+            oidc_client_secret: SecretString::from(required("OIDC_CLIENT_SECRET")?),
+            oidc_code_ttl: parse_duration("OIDC_CODE_TTL_SECONDS", DEFAULT_OIDC_CODE_TTL_SECONDS)?,
+            oidc_token_ttl: parse_duration(
+                "OIDC_TOKEN_TTL_SECONDS",
+                DEFAULT_OIDC_TOKEN_TTL_SECONDS,
+            )?,
+            oidc_signing_key_file: required("OIDC_SIGNING_KEY_FILE")?,
+            dingtalk_client_id: required("DINGTALK_CLIENT_ID")?,
+            dingtalk_client_secret: SecretString::from(required("DINGTALK_CLIENT_SECRET")?),
+            dingtalk_login_scope: value("DINGTALK_LOGIN_SCOPE", DEFAULT_DINGTALK_LOGIN_SCOPE),
         })
     }
 }

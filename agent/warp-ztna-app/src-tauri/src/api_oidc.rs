@@ -34,7 +34,7 @@ impl OidcConfig {
     pub fn from_env() -> Self {
         Self {
             issuer: std::env::var("WARP_OIDC_ISSUER")
-                .unwrap_or_else(|_| "https://keycloak.corp.dy-sec.com/realms/warp-ztna".to_owned()),
+                .unwrap_or_else(|_| "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna".to_owned()),
             client_id: std::env::var("WARP_OIDC_CLIENT_ID")
                 .unwrap_or_else(|_| "warp-ztna-app".to_owned()),
             redirect_uri: "http://127.0.0.1:37123/oauth/callback".to_owned(),
@@ -517,7 +517,7 @@ mod tests {
 
     fn test_config() -> OidcConfig {
         OidcConfig {
-            issuer: "https://keycloak.corp.dy-sec.com/realms/warp-ztna".to_owned(),
+            issuer: "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna".to_owned(),
             client_id: "warp-ztna-app".to_owned(),
             redirect_uri: "http://127.0.0.1:37123/oauth/callback".to_owned(),
             scope: "openid profile email offline_access warp-ztna-api".to_owned(),
@@ -528,7 +528,7 @@ mod tests {
     fn discovery_url_targets_the_issuer_realm() {
         assert_eq!(
             test_config().discovery_url(),
-            "https://keycloak.corp.dy-sec.com/realms/warp-ztna/.well-known/openid-configuration"
+            "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna/.well-known/openid-configuration"
         );
 
         let trailing =
