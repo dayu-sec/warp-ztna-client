@@ -56,6 +56,33 @@ test("group grants join the tree under the asset the catalog knows", () => {
   assert.equal(systems[0].assets[0].rows[0].ssh, null);
 });
 
+const nestedCatalog: AccessRequestCatalog = {
+  groups: [
+    {
+      id: "system-1",
+      name: "业务系统",
+      nodes: [],
+    },
+    {
+      id: "sub-1",
+      name: "子系统",
+      parent_id: "system-1",
+      nodes: [{ id: "node-2", name: "子系统应用", addresses: [{ address: "192.0.2.80", kind: "host" }] }],
+    },
+  ],
+  addresses: [
+    { address: "192.0.2.80", kind: "host", name: "子系统应用", managed: true, assets: ["node-2"] },
+  ],
+};
+
+test("nested groups resolve to the top-level business system", () => {
+  const systems = mapAccessResources([], nestedCatalog, [grant("192.0.2.80", "tcp", [443])], ["192.0.2.0/24"], true);
+
+  assert.equal(systems.length, 1);
+  assert.equal(systems[0].name, "业务系统");
+  assert.equal(systems[0].assets[0].name, "子系统应用");
+});
+
 test("group grants the catalog cannot place fall back to the resource group name", () => {
   const systems = mapAccessResources([], catalog, [grant("192.0.2.9", "tcp", [5432], "示例数据库")], [], true);
 

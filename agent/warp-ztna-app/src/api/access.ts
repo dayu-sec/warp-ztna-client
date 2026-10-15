@@ -49,6 +49,7 @@ export type AccessRequestCatalog = {
   groups: {
     id: string;
     name: string;
+    parent_id?: string | null;
     nodes: { id: string; name: string; addresses: CatalogNodeAddress[] }[];
   }[];
   addresses: CatalogAddress[];
@@ -103,15 +104,28 @@ export function portsText(spec: PortSpec) {
 }
 
 function buildIndexes(catalog: AccessRequestCatalog) {
+  const groupById = new Map(catalog.groups.map((group) => [group.id, group]));
+  const rootName = (group: AccessRequestCatalog["groups"][number]): string => {
+    const seen = new Set<string>([group.id]);
+    let current = group;
+    while (current.parent_id) {
+      const parent = groupById.get(current.parent_id);
+      if (!parent || seen.has(parent.id)) break;
+      seen.add(parent.id);
+      current = parent;
+    }
+    return current.name;
+  };
   const systemByAsset = new Map<string, string>();
   const systemByAddress = new Map<string, string>();
   const assetByAddress = new Map<string, string>();
   const nameByAsset = new Map<string, string>();
   const kindByAddress = new Map<string, MeshAddressKind>();
   for (const group of catalog.groups) {
-    systemByAsset.set(group.id, group.name);
+    const system = rootName(group);
+    systemByAsset.set(group.id, system);
     for (const node of group.nodes) {
-      systemByAsset.set(node.id, group.name);
+      systemByAsset.set(node.id, system);
       nameByAsset.set(node.id, node.name);
       for (const address of node.addresses) {
         if (!kindByAddress.has(addressKey(address.address))) {
