@@ -166,7 +166,7 @@ profile_config_host() {
 remove_foreign_profile_files() {
   for root in "$STATE_DIR" /etc/netbird /var/lib/netbird; do
     [ -d "$root" ] || continue
-    for state_file in $(find "$root" -name '*.json' -type f 2>/dev/null); do
+    find "$root" -name '*.json' -type f 2>/dev/null | while IFS= read -r state_file; do
       [ "$state_file" = "$ACTIVE_FILE" ] && continue
       case "$state_file" in
         */active_profile.json|*/state.json) continue ;;
