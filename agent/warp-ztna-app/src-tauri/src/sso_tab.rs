@@ -4,7 +4,7 @@ use crate::process::run_osascript;
 use crate::ssh_login::Platform;
 
 const NETBIRD_REDIRECT_PORT: u16 = 53_000;
-const CLOSE_BUDGET: Duration = Duration::from_secs(10);
+const CLOSE_BUDGET: Duration = Duration::from_secs(30);
 const SCRIPTABLE_BROWSERS: [&str; 5] =
     ["Safari", "Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"];
 
@@ -16,12 +16,21 @@ pub(crate) fn close_netbird_redirect_tabs() {
         return;
     }
     thread::spawn(|| {
+        let mut permission_warned = false;
         for browser in SCRIPTABLE_BROWSERS {
             let script = close_script(browser);
             match run_osascript(&script, CLOSE_BUDGET) {
                 Ok(()) => log::debug!("sso_tab: asked {browser} to close the NetBird callback tab"),
                 Err(error) => {
-                    log::debug!("sso_tab: {browser} kept the NetBird callback tab: {error}");
+                    log::warn!("sso_tab: {browser} kept the NetBird callback tab: {error}");
+                    if error.contains("-1743") && !permission_warned {
+                        permission_warned = true;
+                        log::warn!(
+                            "sso_tab: macOS denied automation to {browser}; enable Warp ZTNA \
+                             under System Settings → Privacy & Security → Automation to let \
+                             the app close the NetBird callback tab"
+                        );
+                    }
                 }
             }
         }
