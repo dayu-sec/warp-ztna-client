@@ -13,7 +13,7 @@ fi
 NB_BIN="$(command -v netbird)"
 echo "Warp ZTNA：检测到同类组网客户端，安装将先替换它。"
 echo "将停用并移除：${NB_BIN} 及其系统服务与桌面应用。"
-echo "其配置与状态目录保留。"
+echo "其配置与状态目录不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理。"
 
 "$NB_BIN" service stop --service netbird || true
 "$NB_BIN" service uninstall --service netbird || true

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-WARP_VERSION="0.1.4"
+WARP_VERSION="0.1.5"
 NETBIRD_VERSION="0.80.0"
 
 DEFAULT_BASE_URL="https://github.com/dayu-sec/warp-ztna-client/releases/download"
@@ -20,6 +20,7 @@ LOG_FILE="${WARP_ZTNA_LOG_FILE:-$DEFAULT_LOG_FILE}"
 CONF_DIR="${WARP_ZTNA_CONF_DIR:-$DEFAULT_CONF_DIR}"
 BASE_URL="${WARP_ZTNA_BASE_URL:-$DEFAULT_BASE_URL}"
 MANAGEMENT_URL="${WARP_ZTNA_MANAGEMENT_URL:-}"
+PRODUCT_DEFAULT_MANAGEMENT_URL="https://ztna.corp.dy-sec.com:443"
 SETUP_KEY="${WARP_ZTNA_SETUP_KEY:-}"
 SETUP_KEY_FILE=""
 VERSION="$WARP_VERSION"
@@ -40,7 +41,6 @@ WORK_DIR=""
 KEY_TMP=""
 KEY_TMP_OWNED=0
 SUDO_CMD="${WARP_ZTNA_SUDO:-sudo}"
-CURRENT_LIVE=""
 
 LOG_DIR="$(dirname "$LOG_FILE")"
 
@@ -56,10 +56,10 @@ usage() {
   --setup-key-file <PATH>    从文件读取入网凭据，优先于 --setup-key。
   --management-url <URL>     NetBird Management 地址（形如 https://<管理服务器域名>，由部署方提供）。
                              setup-key 入网必填：不给时引擎会打内置公有云地址，本处签发的 key 无效。
-                             注意：若本机既有 NetBird 连接/状态指向其他 Management，安装会
-                             自动清除本地状态（/var/lib/warp-ztna，可用 WARP_ZTNA_STATE_DIR 改）
-                             并切换到该地址（对端旧 peer 记录不受影响）；入网完成后会复核实际
-                             连接的 Management，不一致即报错退出（防“已连接”静默短路）。
+                             注意：入网安装会先清空本机既有的 NetBird 配置（/var/lib/warp-ztna，
+                             可用 WARP_ZTNA_STATE_DIR 改）及旧版引擎残留的 /etc/netbird 等目录中
+                             的旧配置，再按下发目标入网（对端旧 peer 记录不受影响）；入网完成后
+                             会复核实际连接的 Management，不一致即报错退出（防“已连接”静默短路）。
   --enroll <setup-key|sso|none>
                              装完后的入网方式：
                                setup-key  用上面的 key 入网（只给 key 不给 --enroll 时自动选用）
@@ -337,46 +337,55 @@ normalize_host() {
   printf '%s\n' "$1" | sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*$##' -e 's#:443$##'
 }
 
-live_management_host() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    return 1
+management_file_host() {
+  host="$(sed -n 's/.*"ManagementURL"[^}]*"Host": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  if [ -z "$host" ]; then
+    host="$(sed -n 's/.*"Host": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
   fi
-  [ -x "$CLI" ] || return 1
-  "$CLI" status -d 2>/dev/null | sed -n 's/^Management: Connected to \(.*\)$/\1/p' | head -n 1
+  if [ -z "$host" ]; then
+    host="$(sed -n 's/.*"managementURL": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  fi
+  [ -n "$host" ] || return 1
+  normalize_host "$host"
 }
 
 state_management_hosts() {
   for state_file in "$STATE_DIR"/*.json; do
     [ -f "$state_file" ] || continue
-    sed -n 's/.*"managementURL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file"
+    management_file_host "$state_file" || true
   done
-}
-
-foreign_management_host() {
-  target="$(normalize_host "$MANAGEMENT_URL")"
-  [ -n "$target" ] || return 1
-  candidates="$CURRENT_LIVE
-$(state_management_hosts)"
-  for url in $candidates; do
-    host="$(normalize_host "$url")"
-    if [ -n "$host" ] && [ "$host" != "$target" ]; then
-      printf '%s\n' "$host"
-      return 0
-    fi
-  done
-  return 1
 }
 
 switch_management_state() {
   [ "$ENROLL" = "setup-key" ] || return 0
-  foreign="$(foreign_management_host || true)"
-  [ -n "$foreign" ] || return 0
-  target="$(normalize_host "$MANAGEMENT_URL")"
-  note "检测到本机既有 NetBird 连接或状态指向其他管理服务器（${foreign}），与本次入网目标（${target}）不一致："
-  note "  将清除本地 NetBird 状态（${STATE_DIR}）并切换到 ${target}；旧环境的连接配置不再保留（对端旧 peer 记录不受影响）。"
+  previous="$(state_management_hosts | sed -n '1p')"
+  if [ -n "$previous" ]; then
+    note "检测到本机既有 NetBird 配置（指向 ${previous}）——入网安装将先清空："
+  fi
+  note "  清空本机既有配置（${STATE_DIR}）后按下发目标 $(normalize_host "$MANAGEMENT_URL") 入网；旧环境的连接不再保留（对端旧记录不受影响）。"
   run_root rm -rf "$STATE_DIR"
   run_root mkdir -p "$STATE_DIR"
   run_root chmod 0700 "$STATE_DIR"
+}
+
+sweep_legacy_management_state() {
+  for root in /etc/netbird /var/lib/netbird; do
+    [ -d "$root" ] || continue
+    for state_file in $(find "$root" -name '*.json' -type f 2>/dev/null); do
+      case "$state_file" in
+        */active_profile.json|*/state.json) continue ;;
+      esac
+      host="$(management_file_host "$state_file" || true)"
+      [ -n "$host" ] || continue
+      [ "$host" = "$(normalize_host "$PRODUCT_DEFAULT_MANAGEMENT_URL")" ] && continue
+      note "移除残留的旧配置（${state_file} → ${host}）：旧版引擎的该文件会被新版引擎在原位置缺失时自动搬运，先清掉以免旧连接复活。"
+      run_root rm -f "$state_file"
+    done
+  done
+}
+
+live_management_host() {
+  "$CLI" status -d 2>/dev/null | sed -n 's/^Management: Connected to \(.*\)$/\1/p' | head -n 1
 }
 
 verify_management_target() {
@@ -395,7 +404,7 @@ verify_management_target() {
 
 replace_official() {
   NB_BIN="$(command -v netbird)"
-  note "替换同类组网客户端（${NB_BIN}）：停用并移除其服务、CLI 与桌面应用；其配置与状态目录保留。"
+  note "替换同类组网客户端（${NB_BIN}）：停用并移除其服务、CLI 与桌面应用；其配置与状态目录不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理。"
   run_root "$NB_BIN" service stop --service netbird || true
   run_root "$NB_BIN" service uninstall --service netbird || true
   if [ "$OS" = "linux" ]; then
@@ -557,9 +566,6 @@ main() {
     return 0
   fi
 
-  CLI="$BIN_PATH"
-  CURRENT_LIVE="$(live_management_host || true)"
-
   case "$MODE" in
     upgrade)
       CLI="$BIN_PATH"
@@ -585,6 +591,7 @@ main() {
   verify_checksum
   install_binary
   switch_management_state
+  sweep_legacy_management_state
   service_install
 
   enroll

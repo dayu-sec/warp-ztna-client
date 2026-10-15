@@ -117,19 +117,38 @@ else
   bad "install.sh 升级路径缺 service uninstall：既有 warp-ztna 服务时重装必失败"
 fi
 expect_grep "$INSTALL_SH" "旧服务未注销干净" "install.sh 注销残留时给出指路错误"
-expect_grep "$INSTALL_SH" "foreign_management_host" "install.sh 有他管状态检测（自动切换前置）"
+expect_grep "$INSTALL_SH" "清空本机既有配置" "install.sh 入网路径先清空既有配置（一律）"
 expect_grep "$INSTALL_SH" "入网后校验失败" "install.sh 入网后复核实际 Management（防静默 no-op）"
-expect_grep "$INSTALL_SH" "自动清除本地状态" "install.sh usage 反映自动切换语义"
-FOREIGN_STATE="$(mktemp -d)"
-printf '{"managementURL":"https://old.example.com"}\n' > "$FOREIGN_STATE/default.json"
-if switch_out="$(PATH="$TEST_PATH" WARP_ZTNA_STATE_DIR="$FOREIGN_STATE" sh "$INSTALL_SH" --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
-  expect_in "$switch_out" "指向其他管理服务器" "install.sh 检测既有他管状态（行为断言）"
-  expect_in "$switch_out" "将清除本地 NetBird 状态" "install.sh 打印自动清理并切换说明（行为断言）"
-  expect_in "$switch_out" "rm -rf $FOREIGN_STATE" "install.sh 切换时清除既有 state（dry-run 可见）"
+expect_grep "$INSTALL_SH" "先清空本机既有的 NetBird 配置" "install.sh usage 反映入网先清空语义"
+expect_grep "$INSTALL_SH" '"ManagementURL"' "install.sh 按真实键名解析既有配置（PascalCase）"
+expect_grep "$INSTALL_SH" '"managementURL"' "install.sh 兼容 0.80 之前的键名形态"
+expect_grep "$INSTALL_SH" "sweep_legacy_management_state" "install.sh 扫旧版残留目录（/etc/netbird 会被引擎自动搬运复活）"
+EXISTING_STATE="$(mktemp -d)"
+printf '{\n  "Name": "Default",\n  "ManagementURL": {\n    "Scheme": "https",\n    "Host": "old.example.com:443",\n    "Path": ""\n  }\n}\n' > "$EXISTING_STATE/default.json"
+if switch_out="$(PATH="$TEST_PATH" WARP_ZTNA_STATE_DIR="$EXISTING_STATE" sh "$INSTALL_SH" --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
+  expect_in "$switch_out" "既有 NetBird 配置（指向 old.example.com）" "install.sh 打印检测到的既有配置（行为断言）"
+  expect_in "$switch_out" "清空本机既有配置" "install.sh 入网先清空说明（行为断言）"
+  expect_in "$switch_out" "rm -rf $EXISTING_STATE" "install.sh 清空既有 state（dry-run 可见）"
 else
-  bad "带他管 state 的 dry-run 非零退出"
+  bad "带既有 state 的 dry-run 非零退出"
 fi
-rm -rf "$FOREIGN_STATE"
+rm -rf "$EXISTING_STATE"
+COMPACT_STATE="$(mktemp -d)"
+printf '{"Name":"Default","ManagementURL":{"Scheme":"https","Host":"old2.example.com:443","Path":""}}\n' > "$COMPACT_STATE/default.json"
+if compact_out="$(PATH="$TEST_PATH" WARP_ZTNA_STATE_DIR="$COMPACT_STATE" sh "$INSTALL_SH" --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
+  expect_in "$compact_out" "既有 NetBird 配置（指向 old2.example.com）" "install.sh 兼容单行紧凑形态（行为断言）"
+else
+  bad "紧凑形态 state 的 dry-run 非零退出"
+fi
+rm -rf "$COMPACT_STATE"
+LEGACY_STATE="$(mktemp -d)"
+printf '{\n  "managementURL": "https://old3.example.com:443",\n  "adminURL": "https://app.netbird.io:443"\n}\n' > "$LEGACY_STATE/default.json"
+if legacy_fmt_out="$(PATH="$TEST_PATH" WARP_ZTNA_STATE_DIR="$LEGACY_STATE" sh "$INSTALL_SH" --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
+  expect_in "$legacy_fmt_out" "既有 NetBird 配置（指向 old3.example.com）" "install.sh 兼容 0.80 之前的 camelCase 字符串形态（行为断言）"
+else
+  bad "旧版 camelCase 形态 state 的 dry-run 非零退出"
+fi
+rm -rf "$LEGACY_STATE"
 rm -rf "$FAKE_BIN"
 
 if canary_out="$(run_install --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
@@ -453,6 +472,12 @@ expect_grep "$PS1_INSTALL" "service uninstall" "install.ps1 替换：注销官�
 expect_absent "$PS1_INSTALL" "Get-NetbirdVersion" "install.ps1 不读官方版本"
 expect_grep "$PS1_INSTALL" "github.com/dayu-sec/warp-ztna-client/releases/download" "install.ps1 默认取件基址是 Release 直链"
 expect_absent "$PS1_INSTALL" "pkg.warp-ztna.internal" "install.ps1 不再含旧内网域名"
+expect_grep "$PS1_INSTALL" "Switch-ManagementState" "install.ps1 入网前清空既有配置"
+expect_grep "$PS1_INSTALL" "Remove-ForeignLegacyConfig" "install.ps1 扫官方残留目录（ProgramData Netbird）"
+expect_grep "$PS1_INSTALL" "Assert-ManagementTarget" "install.ps1 入网后复核 Management"
+expect_grep "$PS1_INSTALL" "清空本机既有配置" "install.ps1 入网先清空说明"
+expect_grep "$PS1_INSTALL" "入网后校验失败" "install.ps1 复核失败给出原始行"
+expect_grep "$PS1_INSTALL" "先清空本机既有的 NetBird 配置" "install.ps1 usage 反映入网先清空语义"
 if command -v pwsh >/dev/null 2>&1; then
   if pwsh -NoProfile -Command "\$null = [scriptblock]::Create((Get-Content -Raw '${PS1_INSTALL}'))" >/dev/null 2>&1; then
     ok "install.ps1 解析通过"
@@ -468,6 +493,13 @@ if command -v pwsh >/dev/null 2>&1; then
   expect_in "$ps_out" "warp-ztna_9.9.9_windows_amd64.tar.gz" "install.ps1 dry-run 引用 Windows 归档名"
   expect_in "$ps_out" "--service warp-ztna" "install.ps1 dry-run 带服务名"
   expect_in "$ps_out" "checksums.txt" "install.ps1 dry-run 核对校验和"
+  expect_in "$ps_out" "无入网凭据" "install.ps1 dry-run 未带凭据时说明 state 保留"
+  if ps_enroll="$(pwsh -NoProfile -File "$PS1_INSTALL" -DryRun -SetupKey S3CR3T-CANARY -ManagementUrl https://nb.example.com 2>&1)"; then
+    expect_in "$ps_enroll" "入网前先清空本机既有配置" "install.ps1 dry-run 带凭据时给出清空计划（行为断言）"
+    expect_not_in "$ps_enroll" "S3CR3T-CANARY" "install.ps1 dry-run 不回显密钥"
+  else
+    bad "install.ps1 带凭据的 dry-run 非零退出"
+  fi
   if ps_no_url="$(WARP_ZTNA_MANAGEMENT_URL= pwsh -NoProfile -File "$PS1_INSTALL" -DryRun -SetupKey S3CR3T-CANARY 2>&1)"; then
     bad "install.ps1 带 setup key 但不带 ManagementUrl 应当非零退出"
     ps_no_url=""
@@ -522,6 +554,10 @@ expect_grep "$LINUXPKG_SH" "Conflicts: netbird, netbird-ui" "linuxpkg 生成 con
 expect_grep "$LINUXPKG_SH" "按升级处理" "linuxpkg 的 postinst 对既有服务走升级路径"
 expect_grep "$LINUXPKG_SH" "NB_STATE_DIR=" "linuxpkg 的 postinst 透传 state 目录"
 expect_grep "$LINUXPKG_SH" "没有 MANAGEMENT_URL" "linuxpkg 的 postinst 缺 MANAGEMENT_URL 时跳过入网并说明"
+expect_grep "$LINUXPKG_SH" "清空本机既有配置" "linuxpkg 的 postinst 入网路径先清空既有配置"
+expect_grep "$LINUXPKG_SH" "移除残留的旧配置" "linuxpkg 的 postinst 外科清理旁路旧配置（含旧版目录/旧键名）"
+expect_grep "$LINUXPKG_SH" "当前激活配置指向其他管理服务器" "linuxpkg 的 postinst 激活份为他管时整清（文案）"
+expect_grep "$LINUXPKG_SH" '/etc/netbird' "linuxpkg 的 postinst 兼顾旧版官方配置目录"
 
 expect_grep "$POSTINSTALL" "--service warp-ztna" "postinstall 注册 warp-ztna 服务"
 expect_grep "$POSTINSTALL" "按升级处理" "postinstall 对既有服务走升级路径（先停用并注销）"
@@ -530,8 +566,27 @@ expect_grep "$POSTINSTALL" "NB_STATE_DIR=" "postinstall 透传 state 目录"
 expect_grep "$POSTINSTALL" "NB_ENABLE_LOCAL_FORWARDING=true" "postinstall 开本机转发"
 expect_grep "$POSTINSTALL" "--setup-key-file" "postinstall 经临时文件传密钥"
 expect_grep "$POSTINSTALL" "没有 MANAGEMENT_URL" "postinstall 缺 MANAGEMENT_URL 时跳过入网并说明"
-expect_grep "$POSTINSTALL" "指向其他管理服务器" "postinstall 他管状态自动清理并切换"
-expect_grep "$POSTINSTALL" "managementURL" "postinstall 解析既有 managementURL"
+expect_grep "$POSTINSTALL" '"ManagementURL"' "postinstall 按真实键名解析既有配置（PascalCase）"
+expect_grep "$POSTINSTALL" '"managementURL"' "postinstall 兼容 0.80 之前的键名形态"
+expect_grep "$POSTINSTALL" "清空本机既有配置" "postinstall 入网路径先清空既有配置"
+expect_grep "$POSTINSTALL" "指向其他管理服务器" "postinstall 无入网路径按他管清空（文案）"
+expect_grep "$POSTINSTALL" "移除残留的旧配置" "postinstall 外科清理旁路旧配置（含旧版目录/旧键名）"
+expect_grep "$POSTINSTALL" "当前激活配置指向其他管理服务器" "postinstall 激活份为他管时整清（文案）"
+expect_grep "$POSTINSTALL" '/etc/netbird' "postinstall 兼顾旧版官方配置目录"
+APP_LIB="$(dirname -- "$NODE_DIR")/warp-ztna-app/src-tauri/src/lib.rs"
+APP_DEFAULT_URL="$(sed -n 's/.*DEFAULT_MANAGEMENT_URL: &str = "\([^"]*\)".*/\1/p' "$APP_LIB")"
+if [ -z "$APP_DEFAULT_URL" ]; then
+  bad "app lib.rs 缺 DEFAULT_MANAGEMENT_URL"
+else
+  for default_file in "$POSTINSTALL" "$LINUXPKG_SH" "$PS1_INSTALL" "$INSTALL_SH"; do
+    file_url="$(grep -o 'https://ztna\.corp\.dy-sec\.com:443' "$default_file" | head -n 1)"
+    if [ "$file_url" = "$APP_DEFAULT_URL" ]; then
+      ok "${default_file##*/} 的默认管理服务器与 app DEFAULT_MANAGEMENT_URL 一字不差"
+    else
+      bad "${default_file##*/} 的默认管理服务器与 app 不一致（${file_url:-缺字面量} vs ${APP_DEFAULT_URL}）"
+    fi
+  done
+fi
 expect_absent "$POSTINSTALL" "--daemon-addr" "postinstall 不改 socket 地址"
 for brandless in "$PREINSTALL" "$POSTINSTALL" "$INSTALL_SH" "$PS1_INSTALL" "$APP_INSTALL_SH" "$APP_LINUX_INSTALL_SH" "$LINUXPKG_SH"; do
   expect_absent "$brandless" "官方 NetBird" "${brandless##*/} 的输出不含 NetBird 品牌散文"
@@ -555,6 +610,8 @@ expect_grep "$DISTRIBUTION" 'Readme.html' "Distribution 引介绍页 readme"
 expect_absent "$README_HTML" "NetBird" "介绍页不出现 NetBird 品牌（对外表面已去品牌）"
 expect_grep "$README_HTML" "Warp ZTNA 引擎服务" "介绍页用统一名「Warp ZTNA 引擎服务」"
 expect_grep "$README_HTML" "本机已安装引擎服务" "readme 覆盖已有 warp-ztna 的升级路径"
+expect_grep "$README_HTML" "入网配置" "介绍页写明入网配置例外（先清空再入网）"
+expect_grep "$README_HTML" "应用将以产品默认管理服务器开始" "介绍页写明无入网配置时按他管清空"
 
 expect_grep "$MACOS_CONF" '"targets": \["app"\]' "macOS 只出 app（dmg 自建）"
 expect_absent "$DMG_SH" "tauri build" "dmg 由脚本自建、不调 tauri"
@@ -659,6 +716,43 @@ expect_grep "$WXS" '<DirectoryRef Id="TARGETDIR">' "wxs 显式声明 CommonAppDa
 expect_grep "$WXS" '<Directory Id="CommonAppDataFolder" />' "wxs 声明 CommonAppDataFolder 本身"
 expect_grep "$WXS" 'WarpZtnaStateDir" Guid="177f507c-4e8d-4688-aa6b-d5780beebc82"' "state 目录组件用显式 GUID（目录作 KeyPath 不吃自动 GUID）"
 expect_grep "$WXS" "TAURI_ENGINE_EXE" "wxs 引擎文件来自 CI 传入的绝对路径"
+
+MAIN_WXS="$NODE_DIR/../warp-ztna-app/src-tauri/wix/main.wxs"
+expect_grep "$MAIN_WXS" "WarpCleanupForeignState" "MSI 含外域状态清理动作"
+expect_grep "$MAIN_WXS" 'Return="ignore"' "MSI 清理动作失败不阻断安装"
+expect_grep "$MAIN_WXS" 'Before="WarpReplaceOfficialNetbird">NOT Installed' "MSI 清理在安装前执行（替换官方之后）"
+expect_grep "$MAIN_WXS" "ManagementURL" "MSI 清理按真实键名解析既有配置"
+expect_grep "$MAIN_WXS" '"managementURL"' "MSI 清理兼容旧版键名形态"
+expect_grep "$MAIN_WXS" "active_profile.json" "MSI 清理识别激活 profile"
+expect_grep "$MAIN_WXS" "https://ztna.corp.dy-sec.com:443" "MSI 清理带产品默认域（全 URL 形态）"
+expect_grep "$MAIN_WXS" "warp-ztna-install-cleanup.log" "MSI 清理输出日志供现场诊断"
+MAIN_WXS_URL="$(grep -o 'https://ztna\.corp\.dy-sec\.com:443' "$MAIN_WXS" | head -n 1)"
+if [ "$MAIN_WXS_URL" = "$APP_DEFAULT_URL" ]; then
+  ok "main.wxs 的默认管理服务器与 app DEFAULT_MANAGEMENT_URL 一字不差"
+else
+  bad "main.wxs 的默认管理服务器与 app 不一致（${MAIN_WXS_URL:-缺字面量} vs ${APP_DEFAULT_URL}）"
+fi
+
+COMPOSE_SH="$(cd -- "$NODE_DIR/../.." && pwd)/deploy/client-ci/compose.sh"
+if [ -f "$COMPOSE_SH" ]; then
+  GATE_IDENTITY="$(sed -n "s/^IDENTITY_PATTERNS='\(.*\)'$/\1/p" "$COMPOSE_SH")"
+  GATE_ALLOW="$(sed -n "s/^IDENTITY_ALLOW_PATTERNS='\(.*\)'$/\1/p" "$COMPOSE_SH")"
+  if [ -z "$GATE_ALLOW" ]; then
+    bad "compose.sh 缺 IDENTITY_ALLOW_PATTERNS（快照扫描门）"
+  else
+    GATE_TMP="$(mktemp)"
+    for scan_file in "$POSTINSTALL" "$PREINSTALL" "$INSTALL_SH" "$PS1_INSTALL" "$APP_INSTALL_SH" "$APP_LINUX_INSTALL_SH" "$LINUXPKG_SH" "$MACPKG_SH" "$ARCHIVES_SH" "$MAIN_WXS" "$NODE_DIR/tests/smoke.sh"; do
+      grep -HnE "$GATE_IDENTITY" "$scan_file" 2>/dev/null || true
+    done | grep -vE "$GATE_ALLOW" > "$GATE_TMP" || true
+    if [ -s "$GATE_TMP" ]; then
+      bad "客户端面脚本含未放行的内网标识（镜像快照扫描门会红，参考 client 0.1.4 教训）"
+      sed -n '1,5p' "$GATE_TMP" >&2
+    else
+      ok "客户端面脚本的内网标识全部落在快照放行串内"
+    fi
+    rm -f "$GATE_TMP"
+  fi
+fi
 
 for f in "$INSTALL_SH" "$APP_INSTALL_SH" "$APP_LINUX_INSTALL_SH"; do
   expect_grep "$f" "--retry-all-errors" "$(basename -- "$f") 的下载带重试与断点续传"

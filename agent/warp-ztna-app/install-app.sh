@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-WARP_VERSION="0.1.4"
+WARP_VERSION="0.1.5"
 BASE_URL="https://github.com/dayu-sec/warp-ztna-client/releases/download"
 VERSION="$WARP_VERSION"
 DRY_RUN=0
@@ -83,7 +83,7 @@ print_plan() {
 
 replace_official() {
   NB_BIN="$(command -v netbird)"
-  note "检测到同类组网客户端（${NB_BIN}）：先替换它（停用并移除其服务、命令与桌面应用；其配置与状态目录保留）。"
+  note "检测到同类组网客户端（${NB_BIN}）：先替换它（停用并移除其服务、命令与桌面应用；其配置与状态目录不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理）。"
   "$NB_BIN" service stop --service netbird || true
   "$NB_BIN" service uninstall --service netbird || true
   launchctl bootout system/netbird 2>/dev/null || true

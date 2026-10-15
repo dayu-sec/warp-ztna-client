@@ -26,6 +26,9 @@ normalize_host() {
   printf '%s\n' "$1" | sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*$##' -e 's#:443$##'
 }
 
+DEFAULT_MANAGEMENT_URL="https://ztna.corp.dy-sec.com:443"
+DEFAULT_MANAGEMENT_HOST="$(normalize_host "$DEFAULT_MANAGEMENT_URL")"
+
 ENROLL_READY=0
 ENROLL_SKIP_MSG=""
 SETUP_KEY=""
@@ -55,26 +58,64 @@ else
   esac
 fi
 
-if [ "$ENROLL_READY" -eq 1 ]; then
-  TARGET_HOST="$(normalize_host "$MANAGEMENT_URL")"
-  FOREIGN_HOST=""
-  for state_file in "$STATE_DIR"/*.json; do
-    [ -f "$state_file" ] || continue
-    state_url="$(sed -n 's/.*"managementURL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file" | head -n 1)"
-    [ -n "$state_url" ] || continue
-    state_host="$(normalize_host "$state_url")"
-    if [ -n "$state_host" ] && [ "$state_host" != "$TARGET_HOST" ]; then
-      FOREIGN_HOST="$state_host"
-      break
-    fi
-  done
-  if [ -n "$FOREIGN_HOST" ]; then
-    echo "Warp ZTNA：检测到本机既有 NetBird 状态指向其他管理服务器（${FOREIGN_HOST}），与入网目标（${TARGET_HOST}）不一致："
-    echo "  将清除本地 NetBird 状态（${STATE_DIR}）并切换到 ${TARGET_HOST}；旧环境的连接配置不再保留（对端旧 peer 记录不受影响）。"
-    rm -rf "$STATE_DIR"
-    mkdir -p "$STATE_DIR"
-    chmod 0700 "$STATE_DIR"
+profile_config_host() {
+  profile_host="$(sed -n 's/.*"ManagementURL"[^}]*"Host": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  if [ -z "$profile_host" ]; then
+    profile_host="$(sed -n 's/.*"Host": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
   fi
+  if [ -z "$profile_host" ]; then
+    profile_host="$(sed -n 's/.*"managementURL": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  fi
+  [ -n "$profile_host" ] || return 1
+  normalize_host "$profile_host"
+}
+
+remove_foreign_profile_files() {
+  for root in "$STATE_DIR" /etc/netbird /var/lib/netbird; do
+    [ -d "$root" ] || continue
+    for state_file in $(find "$root" -name '*.json' -type f 2>/dev/null); do
+      [ "$state_file" = "$ACTIVE_FILE" ] && continue
+      case "$state_file" in
+        */active_profile.json|*/state.json) continue ;;
+      esac
+      state_host="$(profile_config_host "$state_file" || true)"
+      [ -n "$state_host" ] || continue
+      [ "$state_host" = "$DEFAULT_MANAGEMENT_HOST" ] && continue
+      echo "Warp ZTNA：移除残留的旧配置（${state_file} → ${state_host}）。"
+      rm -f "$state_file"
+    done
+  done
+}
+
+ACTIVE_ID="$(sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' "$STATE_DIR/active_profile.json" 2>/dev/null | head -n 1)"
+if [ -z "$ACTIVE_ID" ] || [ "$ACTIVE_ID" = "default" ]; then
+  ACTIVE_FILE="$STATE_DIR/default.json"
+else
+  ACTIVE_FILE="$(find "$STATE_DIR" -name "${ACTIVE_ID}.json" -type f 2>/dev/null | head -n 1)"
+fi
+ACTIVE_HOST=""
+if [ -n "$ACTIVE_FILE" ] && [ -f "$ACTIVE_FILE" ]; then
+  ACTIVE_HOST="$(profile_config_host "$ACTIVE_FILE" || true)"
+fi
+
+if [ "$ENROLL_READY" -eq 1 ]; then
+  if [ -n "$ACTIVE_HOST" ]; then
+    echo "Warp ZTNA：检测到本机既有 NetBird 配置（指向 ${ACTIVE_HOST}）——入网安装将先清空："
+  fi
+  echo "  清空本机既有配置（${STATE_DIR}）后按下发目标 $(normalize_host "$MANAGEMENT_URL") 入网；旧环境的连接不再保留（对端旧记录不受影响）。"
+  rm -rf "$STATE_DIR"
+  mkdir -p "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  remove_foreign_profile_files
+elif [ -n "$ACTIVE_HOST" ] && [ "$ACTIVE_HOST" != "$DEFAULT_MANAGEMENT_HOST" ]; then
+  echo "Warp ZTNA：当前激活配置指向其他管理服务器（${ACTIVE_HOST}），与产品默认（${DEFAULT_MANAGEMENT_HOST}）不一致："
+  echo "  将清空本机既有配置（${STATE_DIR}）；应用将以产品默认管理服务器开始（对端旧记录不受影响）。"
+  rm -rf "$STATE_DIR"
+  mkdir -p "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  remove_foreign_profile_files
+else
+  remove_foreign_profile_files
 fi
 
 "$BIN" service install --service warp-ztna --log-file "$LOG_FILE" --log-level info \

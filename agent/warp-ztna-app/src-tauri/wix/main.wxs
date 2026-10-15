@@ -417,6 +417,170 @@ End If
           <Custom Action="WarpReplaceOfficialNetbird" Before="InstallFiles">NOT Installed</Custom>
         </InstallExecuteSequence>
 
+        <CustomAction Id="WarpCleanupForeignState" Script="vbscript" Execute="deferred" Impersonate="no" Return="ignore">
+            <![CDATA[
+Dim shell, fso, wmi, svcs, svc, logFile, q, stateDir, legacyDir, activeFile, defaultHost, clearAll
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+On Error Resume Next
+Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+Set svcs = wmi.ExecQuery("SELECT * FROM Win32_Service WHERE Name = 'warp-ztna'")
+For Each svc In svcs
+  svc.StopService
+Next
+q = Chr(34)
+stateDir = shell.ExpandEnvironmentStrings("%ProgramData%") & "\warp-ztna"
+legacyDir = shell.ExpandEnvironmentStrings("%ProgramData%") & "\Netbird"
+defaultHost = NormHost("https://ztna.corp.dy-sec.com:443")
+Set logFile = fso.OpenTextFile(shell.ExpandEnvironmentStrings("%TEMP%") & "\warp-ztna-install-cleanup.log", 8, True)
+logFile.WriteLine "warp-ztna state cleanup start"
+activeFile = FindActiveFile()
+clearAll = False
+If activeFile <> "" Then
+  If HostOfFile(activeFile) <> "" Then
+    If HostOfFile(activeFile) <> defaultHost Then
+      clearAll = True
+    End If
+  End If
+End If
+If clearAll Then
+  logFile.WriteLine "active profile points to another management server; clearing " & stateDir
+  ClearStateDir stateDir
+Else
+  logFile.WriteLine "active profile absent or on product default; removing foreign leftovers"
+  ScanRoot stateDir, activeFile
+End If
+ScanRoot legacyDir, ""
+logFile.WriteLine "warp-ztna state cleanup done"
+logFile.Close
+
+Function NormHost(value)
+  Dim h, re
+  h = value
+  Set re = New RegExp
+  re.Pattern = "^[A-Za-z][A-Za-z0-9+.-]*://"
+  h = re.Replace(h, "")
+  re.Pattern = "/.*$"
+  h = re.Replace(h, "")
+  re.Pattern = ":443$"
+  h = re.Replace(h, "")
+  NormHost = h
+End Function
+
+Function HostOfFile(path)
+  Dim ts, content, re, matches, qq
+  HostOfFile = ""
+  If Not fso.FileExists(path) Then Exit Function
+  qq = q
+  Set ts = fso.OpenTextFile(path, 1, False, 0)
+  content = ts.ReadAll
+  ts.Close
+  Set re = New RegExp
+  re.Pattern = qq & "ManagementURL" & qq & "\s*:\s*\{" & "[^}]*?" & qq & "Host" & qq & "\s*:\s*" & qq & "([^" & qq & "]+)" & qq
+  Set matches = re.Execute(content)
+  If matches.Count > 0 Then
+    HostOfFile = NormHost(matches(0).SubMatches(0))
+    Exit Function
+  End If
+  re.Pattern = qq & "Host" & qq & "\s*:\s*" & qq & "([^" & qq & "]+)" & qq
+  Set matches = re.Execute(content)
+  If matches.Count > 0 Then
+    HostOfFile = NormHost(matches(0).SubMatches(0))
+    Exit Function
+  End If
+  re.IgnoreCase = True
+  re.Pattern = qq & "managementURL" & qq & "\s*:\s*" & qq & "([^" & qq & "]+)" & qq
+  Set matches = re.Execute(content)
+  If matches.Count > 0 Then
+    HostOfFile = NormHost(matches(0).SubMatches(0))
+  End If
+End Function
+
+Function FindActiveFile()
+  Dim ts, content, re, matches, id
+  FindActiveFile = ""
+  id = ""
+  If fso.FileExists(stateDir & "\active_profile.json") Then
+    Set ts = fso.OpenTextFile(stateDir & "\active_profile.json", 1, False, 0)
+    content = ts.ReadAll
+    ts.Close
+    Set re = New RegExp
+    re.Pattern = q & "name" & q & "\s*:\s*" & q & "([^" & q & "]+)" & q
+    Set matches = re.Execute(content)
+    If matches.Count > 0 Then id = matches(0).SubMatches(0)
+  End If
+  If id = "" Or LCase(id) = "default" Then
+    FindActiveFile = stateDir & "\default.json"
+    Exit Function
+  End If
+  FindActiveFile = FindFileByName(stateDir, id & ".json")
+End Function
+
+Function FindFileByName(rootPath, fileName)
+  Dim folder, f, sub, hit
+  FindFileByName = ""
+  If Not fso.FolderExists(rootPath) Then Exit Function
+  Set folder = fso.GetFolder(rootPath)
+  For Each f In folder.Files
+    If LCase(f.Name) = LCase(fileName) Then
+      FindFileByName = f.Path
+      Exit Function
+    End If
+  Next
+  For Each sub In folder.SubFolders
+    hit = FindFileByName(sub.Path, fileName)
+    If hit <> "" Then
+      FindFileByName = hit
+      Exit Function
+    End If
+  Next
+End Function
+
+Sub ScanRoot(rootPath, activePath)
+  Dim folder, f, sub
+  If Not fso.FolderExists(rootPath) Then Exit Sub
+  Set folder = fso.GetFolder(rootPath)
+  For Each f In folder.Files
+    If LCase(fso.GetExtensionName(f.Name)) = "json" Then
+      ProcessFile f.Path, activePath
+    End If
+  Next
+  For Each sub In folder.SubFolders
+    ScanRoot sub.Path, activePath
+  Next
+End Sub
+
+Sub ProcessFile(path, activePath)
+  Dim nm, host
+  nm = LCase(fso.GetFileName(path))
+  If nm = "active_profile.json" Or nm = "state.json" Then Exit Sub
+  If activePath <> "" Then
+    If LCase(path) = LCase(activePath) Then Exit Sub
+  End If
+  host = HostOfFile(path)
+  If host = "" Then Exit Sub
+  If host = defaultHost Then Exit Sub
+  fso.DeleteFile path, True
+  logFile.WriteLine "removed: " & path & " -> " & host
+End Sub
+
+Sub ClearStateDir(rootPath)
+  Dim folder, f, sub
+  If Not fso.FolderExists(rootPath) Then Exit Sub
+  Set folder = fso.GetFolder(rootPath)
+  For Each f In folder.Files
+    fso.DeleteFile f.Path, True
+  Next
+  For Each sub In folder.SubFolders
+    fso.DeleteFolder sub.Path, True
+  Next
+End Sub
+            ]]>
+        </CustomAction>
+        <InstallExecuteSequence>
+          <Custom Action="WarpCleanupForeignState" Before="WarpReplaceOfficialNetbird">NOT Installed</Custom>
+        </InstallExecuteSequence>
+
         <InstallExecuteSequence>
           <Custom Action="LaunchApplication" After="InstallFinalize">AUTOLAUNCHAPP AND NOT Installed</Custom>
         </InstallExecuteSequence>

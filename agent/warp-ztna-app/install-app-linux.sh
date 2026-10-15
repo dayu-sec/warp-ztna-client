@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-WARP_VERSION="0.1.4"
+WARP_VERSION="0.1.5"
 BASE_URL="https://github.com/dayu-sec/warp-ztna-client/releases/download"
 VERSION="$WARP_VERSION"
 DRY_RUN=0
@@ -12,7 +12,7 @@ usage() {
 
 在 Linux 机器上一条命令完成客户端安装：按本机架构与包管理器取 deb / rpm 并安装。
 包内自带引擎与桌面应用，安装时由包内脚本注册并启动 warp-ztna 服务。
-本机已有同类组网客户端时先替换它（停用并移除其服务、命令与桌面应用包；state 保留），再安装。
+本机已有同类组网客户端时先替换它（停用并移除其服务、命令与桌面应用包；state 不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理），再安装。
 
 选项：
   --version <x.y.z>  覆盖安装的包版本，默认脚本内嵌版本
@@ -86,7 +86,7 @@ detect_manager() {
 
 replace_official() {
   NB_BIN="$(command -v netbird)"
-  note "检测到同类组网客户端（${NB_BIN}）：先替换它（停用并移除其服务、CLI 与桌面应用；其配置与状态目录保留），再安装 Warp 客户端。"
+  note "检测到同类组网客户端（${NB_BIN}）：先替换它（停用并移除其服务、CLI 与桌面应用；其配置与状态目录不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理），再安装 Warp 客户端。"
   "$NB_BIN" service stop --service netbird || true
   "$NB_BIN" service uninstall --service netbird || true
   for unit_dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
@@ -117,7 +117,7 @@ print_plan() {
   printf '[dry-run] 架构 %s；安装包类型 %s\n' "$ARCH" "$PKG_KIND"
   printf '[dry-run] 安装包 %s\n' "$PKG_URL"
   printf '[dry-run] 安装包已自带引擎与桌面应用，无需另装引擎\n'
-  printf '[dry-run] 若本机已装同类组网客户端：先替换它（停用并移除其服务、CLI 与桌面应用；state 保留），再安装\n'
+  printf '[dry-run] 若本机已装同类组网客户端：先替换它（停用并移除其服务、CLI 与桌面应用；state 不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理），再安装\n'
   if [ "$PKG_KIND" = "deb" ]; then
     printf '[dry-run] DEBIAN_FRONTEND=noninteractive apt-get install -y <临时目录>/%s（无 apt-get 时 dpkg -i）\n' "$PKG_NAME"
   else

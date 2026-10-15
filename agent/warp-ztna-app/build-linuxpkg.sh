@@ -92,7 +92,7 @@ print_plan() {
   printf '[dry-run] dpkg-deb -R %s <stage>（解开 tauri APP 包）\n' "$DEB"
   printf '[dry-run] tar -xzf %s -C <stage>/usr/local/lib/warp-ztna（注入引擎）\n' "$ARCHIVE"
   printf '[dry-run] control 追加 Conflicts: netbird, netbird-ui\n'
-  printf '[dry-run] 写 <stage>/DEBIAN/{preinst,postinst,prerm}：preinst 先替换同类组网客户端；postinst 注册并启动 warp-ztna 服务；enroll.conf 预置入网\n'
+  printf '[dry-run] 写 <stage>/DEBIAN/{preinst,postinst,prerm}：preinst 先替换同类组网客户端；postinst 先清理旧配置（入网一律清空 / 激活他管整清 / 否则外科移除，含 /etc/netbird 等旧版残留）再注册并启动 warp-ztna 服务；enroll.conf 预置入网\n'
   printf '[dry-run] dpkg-deb -b <stage> %s/%s\n' "$OUT_DIR" "$DEB_NAME"
   printf '[dry-run] fpm -s dir -t rpm -n warp-ztna -v %s --architecture %s --after-install <stage>/DEBIAN/postinst --before-install <stage>/DEBIAN/preinst --before-remove <stage>/DEBIAN/prerm --conflicts netbird --conflicts netbird-ui --rpm-compression gzip --package %s/%s -C <stage> usr\n' "$VERSION" "$RPM_ARCH" "$OUT_DIR" "$RPM_NAME"
   printf '[dry-run] 产物 %s/%s、%s/%s（未签名）\n' "$OUT_DIR" "$DEB_NAME" "$OUT_DIR" "$RPM_NAME"
@@ -104,40 +104,121 @@ write_maintainer_scripts() {
 set -eu
 BIN=/usr/local/lib/warp-ztna/netbird
 CONF=/etc/warp-ztna/enroll.conf
-mkdir -p /var/lib/warp-ztna /etc/warp-ztna /var/log/warp-ztna
-chmod 0700 /var/lib/warp-ztna
+STATE_DIR=/var/lib/warp-ztna
+mkdir -p "$STATE_DIR" /etc/warp-ztna /var/log/warp-ztna
+chmod 0700 "$STATE_DIR"
 chmod 0750 /etc/warp-ztna /var/log/warp-ztna
+
+ENROLL_READY=0
+ENROLL_SKIP_MSG=""
+SETUP_KEY=""
+MANAGEMENT_URL=""
+if [ ! -f "$CONF" ]; then
+  ENROLL_SKIP_MSG="未请求入网。装完后的两条引擎命令（原文，不新增命令面）：
+  机器入网：$BIN up --setup-key-file <文件> --management-url <URL>
+  交互登录：$BIN login --no-browser
+（deb/rpm 的 postinst 读不到 stdin；预置入网请把 KEY=VALUE 写进 ${CONF}，0600、root 所有；目标机曾接入其他管理服务器或残留旧版配置时，安装会先自动清理本地状态并切换。）"
+else
+  CONF_META="$(stat -c '%U %a' "$CONF")"
+  case "$CONF_META" in
+    "root 600")
+      SETUP_KEY="$(sed -n 's/^SETUP_KEY=//p' "$CONF" | head -n 1)"
+      MANAGEMENT_URL="$(sed -n 's/^MANAGEMENT_URL=//p' "$CONF" | head -n 1)"
+      if [ -z "$SETUP_KEY" ]; then
+        ENROLL_SKIP_MSG="$CONF 里没有 SETUP_KEY，已跳过入网。"
+      elif [ -z "$MANAGEMENT_URL" ]; then
+        ENROLL_SKIP_MSG="$CONF 里有 SETUP_KEY 但没有 MANAGEMENT_URL，已跳过入网——引擎不带该参数时会打它内置的公有云默认地址（不是本部署的管理服务器），本处签发的 key 在那边无效；补上 MANAGEMENT_URL 后重跑入网命令。"
+      else
+        ENROLL_READY=1
+      fi
+      ;;
+    *)
+      ENROLL_SKIP_MSG="$CONF 必须是 root 所有且权限 0600（当前 ${CONF_META}），已跳过入网。"
+      ;;
+  esac
+fi
+
 if [ -f /etc/systemd/system/warp-ztna.service ] || [ -f /usr/lib/systemd/system/warp-ztna.service ] || [ -f /lib/systemd/system/warp-ztna.service ]; then
-  echo "Warp ZTNA：检测到既有 warp-ztna 服务，按升级处理（state 保留）：停服 → 换二进制 → 重装服务 → 启动。"
+  echo "Warp ZTNA：检测到既有 warp-ztna 服务，按升级处理：停服 → 换二进制 → 重装服务 → 启动。"
   "$BIN" service stop --service warp-ztna || true
   "$BIN" service uninstall --service warp-ztna || true
 fi
-"$BIN" service install --service warp-ztna --log-file /var/log/warp-ztna/client.log --log-level info --service-env "NB_STATE_DIR=/var/lib/warp-ztna" || { echo "Warp ZTNA：service install 失败（退出码 $?）。" >&2; exit 1; }
+
+normalize_host() {
+  printf '%s\n' "$1" | sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*$##' -e 's#:443$##'
+}
+
+DEFAULT_MANAGEMENT_URL="https://ztna.corp.dy-sec.com:443"
+DEFAULT_MANAGEMENT_HOST="$(normalize_host "$DEFAULT_MANAGEMENT_URL")"
+
+profile_config_host() {
+  profile_host="$(sed -n 's/.*"ManagementURL"[^}]*"Host": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  if [ -z "$profile_host" ]; then
+    profile_host="$(sed -n 's/.*"Host": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  fi
+  if [ -z "$profile_host" ]; then
+    profile_host="$(sed -n 's/.*"managementURL": *"\([^"]*\)".*/\1/p' "$1" | head -n 1)"
+  fi
+  [ -n "$profile_host" ] || return 1
+  normalize_host "$profile_host"
+}
+
+remove_foreign_profile_files() {
+  for root in "$STATE_DIR" /etc/netbird /var/lib/netbird; do
+    [ -d "$root" ] || continue
+    for state_file in $(find "$root" -name '*.json' -type f 2>/dev/null); do
+      [ "$state_file" = "$ACTIVE_FILE" ] && continue
+      case "$state_file" in
+        */active_profile.json|*/state.json) continue ;;
+      esac
+      state_host="$(profile_config_host "$state_file" || true)"
+      [ -n "$state_host" ] || continue
+      [ "$state_host" = "$DEFAULT_MANAGEMENT_HOST" ] && continue
+      echo "Warp ZTNA：移除残留的旧配置（${state_file} → ${state_host}）。"
+      rm -f "$state_file"
+    done
+  done
+}
+
+ACTIVE_ID="$(sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' "$STATE_DIR/active_profile.json" 2>/dev/null | head -n 1)"
+if [ -z "$ACTIVE_ID" ] || [ "$ACTIVE_ID" = "default" ]; then
+  ACTIVE_FILE="$STATE_DIR/default.json"
+else
+  ACTIVE_FILE="$(find "$STATE_DIR" -name "${ACTIVE_ID}.json" -type f 2>/dev/null | head -n 1)"
+fi
+ACTIVE_HOST=""
+if [ -n "$ACTIVE_FILE" ] && [ -f "$ACTIVE_FILE" ]; then
+  ACTIVE_HOST="$(profile_config_host "$ACTIVE_FILE" || true)"
+fi
+
+if [ "$ENROLL_READY" -eq 1 ]; then
+  if [ -n "$ACTIVE_HOST" ]; then
+    echo "Warp ZTNA：检测到本机既有 NetBird 配置（指向 ${ACTIVE_HOST}）——入网安装将先清空："
+  fi
+  echo "  清空本机既有配置（${STATE_DIR}）后按下发目标 $(normalize_host "$MANAGEMENT_URL") 入网；旧环境的连接不再保留（对端旧记录不受影响）。"
+  rm -rf "$STATE_DIR"
+  mkdir -p "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  remove_foreign_profile_files
+elif [ -n "$ACTIVE_HOST" ] && [ "$ACTIVE_HOST" != "$DEFAULT_MANAGEMENT_HOST" ]; then
+  echo "Warp ZTNA：当前激活配置指向其他管理服务器（${ACTIVE_HOST}），与产品默认（${DEFAULT_MANAGEMENT_HOST}）不一致："
+  echo "  将清空本机既有配置（${STATE_DIR}）；应用将以产品默认管理服务器开始（对端旧记录不受影响）。"
+  rm -rf "$STATE_DIR"
+  mkdir -p "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  remove_foreign_profile_files
+else
+  remove_foreign_profile_files
+fi
+
+"$BIN" service install --service warp-ztna --log-file /var/log/warp-ztna/client.log --log-level info --service-env "NB_STATE_DIR=$STATE_DIR" || { echo "Warp ZTNA：service install 失败（退出码 $?）。" >&2; exit 1; }
 "$BIN" service start --service warp-ztna || { echo "Warp ZTNA：service start 失败（退出码 $?）。" >&2; exit 1; }
-if [ ! -f "$CONF" ]; then
-  echo "Warp ZTNA：未请求入网。装完后的两条引擎命令（原文，不新增命令面）："
-  echo "  机器入网：$BIN up --setup-key-file <文件> --management-url <URL>"
-  echo "  交互登录：$BIN login --no-browser"
+
+if [ "$ENROLL_READY" -ne 1 ]; then
+  echo "Warp ZTNA：$ENROLL_SKIP_MSG"
   exit 0
 fi
-CONF_META="$(stat -c '%U %a' "$CONF")"
-case "$CONF_META" in
-  "root 600") ;;
-  *)
-    echo "Warp ZTNA：$CONF 必须是 root 所有且权限 0600（当前 ${CONF_META}），已跳过入网。"
-    exit 0
-    ;;
-esac
-SETUP_KEY="$(sed -n 's/^SETUP_KEY=//p' "$CONF" | head -n 1)"
-MANAGEMENT_URL="$(sed -n 's/^MANAGEMENT_URL=//p' "$CONF" | head -n 1)"
-if [ -z "$SETUP_KEY" ]; then
-  echo "Warp ZTNA：$CONF 里没有 SETUP_KEY，已跳过入网。"
-  exit 0
-fi
-if [ -z "$MANAGEMENT_URL" ]; then
-  echo "Warp ZTNA：$CONF 里有 SETUP_KEY 但没有 MANAGEMENT_URL，已跳过入网——引擎不带该参数时会打它内置的公有云默认地址（不是本部署的管理服务器），本处签发的 key 在那边无效；补上 MANAGEMENT_URL 后重跑入网命令。"
-  exit 0
-fi
+
 KEY_TMP="$(mktemp)"
 chmod 0600 "$KEY_TMP"
 printf '%s\n' "$SETUP_KEY" > "$KEY_TMP"
@@ -149,6 +230,7 @@ else
   echo "警告：入网命令未成功（引擎与服务已装好）；请稍后重试 $BIN up，或检查 ${CONF}。"
 fi
 exit 0
+
 POSTINST_EOF
   cat > "$STAGE/DEBIAN/preinst" <<'PREINST_EOF'
 #!/bin/sh
@@ -160,7 +242,7 @@ if ! command -v netbird >/dev/null 2>&1; then
   exit 0
 fi
 NB_BIN="$(command -v netbird)"
-echo "Warp ZTNA：检测到同类组网客户端（${NB_BIN}），安装将先替换它（停用并移除其服务与命令；其配置与状态目录保留）。"
+echo "Warp ZTNA：检测到同类组网客户端（${NB_BIN}），安装将先替换它（停用并移除其服务与命令；其配置与状态目录不随卸载删除，其中指向其他管理服务器的旧配置会在安装时被清理）。"
 "$NB_BIN" service stop --service netbird || true
 "$NB_BIN" service uninstall --service netbird || true
 for unit_dir in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
