@@ -170,6 +170,8 @@ pub struct ApiConfig {
     pub allowed_origins: Vec<String>,
     pub local_session_secure: bool,
     pub local_session_ttl_hours: i64,
+    pub local_bootstrap_token: Option<SecretString>,
+    pub docs_enabled: bool,
     pub shutdown: ShutdownConfig,
     pub orch_base_url: String,
     pub authz_request_timeout: Duration,
@@ -394,6 +396,8 @@ impl ApiConfig {
                 },
             )?,
             local_session_ttl_hours: parse("WARP_LOCAL_SESSION_TTL_HOURS", "12")?,
+            local_bootstrap_token: optional("WARP_LOCAL_BOOTSTRAP_TOKEN").map(SecretString::from),
+            docs_enabled: parse_bool("WARP_API_DOCS_ENABLED", false)?,
             shutdown: shutdown_config_from_env()?,
             orch_base_url: value("WARP_ORCH_BASE_URL", "http://127.0.0.1:8090"),
             authz_request_timeout: parse_duration(
