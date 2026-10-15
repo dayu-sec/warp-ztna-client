@@ -306,6 +306,9 @@ async fn wait_sso(
             }
         }
         Err(error) => {
+            if error.is_pending_approval() {
+                sso_tab::close_netbird_redirect_tabs();
+            }
             if let Some(classified) = classify(&error, "wait sso") {
                 return Err(classified);
             }

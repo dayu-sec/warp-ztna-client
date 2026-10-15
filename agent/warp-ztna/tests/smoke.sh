@@ -117,6 +117,19 @@ else
   bad "install.sh 升级路径缺 service uninstall：既有 warp-ztna 服务时重装必失败"
 fi
 expect_grep "$INSTALL_SH" "旧服务未注销干净" "install.sh 注销残留时给出指路错误"
+expect_grep "$INSTALL_SH" "foreign_management_host" "install.sh 有他管状态检测（自动切换前置）"
+expect_grep "$INSTALL_SH" "入网后校验失败" "install.sh 入网后复核实际 Management（防静默 no-op）"
+expect_grep "$INSTALL_SH" "自动清除本地状态" "install.sh usage 反映自动切换语义"
+FOREIGN_STATE="$(mktemp -d)"
+printf '{"managementURL":"https://old.example.com"}\n' > "$FOREIGN_STATE/default.json"
+if switch_out="$(PATH="$TEST_PATH" WARP_ZTNA_STATE_DIR="$FOREIGN_STATE" sh "$INSTALL_SH" --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
+  expect_in "$switch_out" "指向其他管理服务器" "install.sh 检测既有他管状态（行为断言）"
+  expect_in "$switch_out" "将清除本地 NetBird 状态" "install.sh 打印自动清理并切换说明（行为断言）"
+  expect_in "$switch_out" "rm -rf $FOREIGN_STATE" "install.sh 切换时清除既有 state（dry-run 可见）"
+else
+  bad "带他管 state 的 dry-run 非零退出"
+fi
+rm -rf "$FOREIGN_STATE"
 rm -rf "$FAKE_BIN"
 
 if canary_out="$(run_install --dry-run --setup-key S3CR3T-CANARY --management-url https://nb.example.com 2>&1)"; then
@@ -517,6 +530,8 @@ expect_grep "$POSTINSTALL" "NB_STATE_DIR=" "postinstall 透传 state 目录"
 expect_grep "$POSTINSTALL" "NB_ENABLE_LOCAL_FORWARDING=true" "postinstall 开本机转发"
 expect_grep "$POSTINSTALL" "--setup-key-file" "postinstall 经临时文件传密钥"
 expect_grep "$POSTINSTALL" "没有 MANAGEMENT_URL" "postinstall 缺 MANAGEMENT_URL 时跳过入网并说明"
+expect_grep "$POSTINSTALL" "指向其他管理服务器" "postinstall 他管状态自动清理并切换"
+expect_grep "$POSTINSTALL" "managementURL" "postinstall 解析既有 managementURL"
 expect_absent "$POSTINSTALL" "--daemon-addr" "postinstall 不改 socket 地址"
 for brandless in "$PREINSTALL" "$POSTINSTALL" "$INSTALL_SH" "$PS1_INSTALL" "$APP_INSTALL_SH" "$APP_LINUX_INSTALL_SH" "$LINUXPKG_SH"; do
   expect_absent "$brandless" "官方 NetBird" "${brandless##*/} 的输出不含 NetBird 品牌散文"

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-WARP_VERSION="0.1.2"
+WARP_VERSION="0.1.4"
 NETBIRD_VERSION="0.80.0"
 
 DEFAULT_BASE_URL="https://github.com/dayu-sec/warp-ztna-client/releases/download"
@@ -40,6 +40,7 @@ WORK_DIR=""
 KEY_TMP=""
 KEY_TMP_OWNED=0
 SUDO_CMD="${WARP_ZTNA_SUDO:-sudo}"
+CURRENT_LIVE=""
 
 LOG_DIR="$(dirname "$LOG_FILE")"
 
@@ -47,24 +48,39 @@ usage() {
   cat <<'USAGE'
 用法：install.sh [选项]
 
-选项：
-  --setup-key <KEY>          机器入网凭据，一次性使用（脚本会转成 0600 临时文件）
-  --setup-key-file <PATH>    从文件读取机器入网凭据，优先于 --setup-key
-  --management-url <URL>     NetBird Management 地址；setup-key 入网必填（默认取环境变量 WARP_ZTNA_MANAGEMENT_URL）
+把 Warp ZTNA 引擎装为本机系统服务（默认服务名 warp-ztna），可选在安装后一步完成机器入网。
+
+入网选项：
+  --setup-key <KEY>          机器入网凭据（由管理台「资产入网」签发，一次性、用后即废）。
+                             脚本会转成 0600 临时文件传递，不落明文本。
+  --setup-key-file <PATH>    从文件读取入网凭据，优先于 --setup-key。
+  --management-url <URL>     NetBird Management 地址（形如 https://<管理服务器域名>，由部署方提供）。
+                             setup-key 入网必填：不给时引擎会打内置公有云地址，本处签发的 key 无效。
+                             注意：若本机既有 NetBird 连接/状态指向其他 Management，安装会
+                             自动清除本地状态（/var/lib/warp-ztna，可用 WARP_ZTNA_STATE_DIR 改）
+                             并切换到该地址（对端旧 peer 记录不受影响）；入网完成后会复核实际
+                             连接的 Management，不一致即报错退出（防“已连接”静默短路）。
   --enroll <setup-key|sso|none>
-                             装完后的入网方式，默认 none；只给 key 不给 --enroll 时按 setup-key 处理
-  --version <x.y.z>          要安装的包版本，默认脚本内嵌版本
-  --base-url <URL>           产物基址，默认取环境变量 WARP_ZTNA_BASE_URL
+                             装完后的入网方式：
+                               setup-key  用上面的 key 入网（只给 key 不给 --enroll 时自动选用）
+                               sso        交互 SSO 登录（沿用引擎当前的 Management 配置；
+                                          要更换 Management 请走 setup-key 路径或 --uninstall --purge 重装）
+                               none       只装引擎、不入网（默认）
+
+维护与调试：
+  --uninstall                卸载服务与二进制；本地 state 保留
+  --purge                    与 --uninstall 同用：连 state、日志与配置目录一并删除
+                             （彻底重置/换环境用 --uninstall --purge 后重新安装）
+  --version <x.y.z>          安装指定版本，默认脚本内嵌版本
+  --base-url <URL>           产物基址，默认 GitHub Releases 直链（内网可换成镜像基址）
   --service <NAME>           服务名，默认 warp-ztna
-  --force                    （兼容保留：遇同类组网客户端现在一律先替换，无需开关）
-  --uninstall                卸载服务与二进制；state 保留
-  --purge                    与 --uninstall 同用：连 state、日志与配置一起删除
   --dry-run                  只打印将执行的命令，不改动系统
+  --force                    （兼容保留：遇同类组网客户端现在一律先替换，无需开关）
   --help                     显示本帮助
 
-环境变量：
-  WARP_ZTNA_SERVICE_NAME / WARP_ZTNA_STATE_DIR / WARP_ZTNA_LOG_FILE / WARP_ZTNA_CONF_DIR
+环境变量（与同名开关等价）：
   WARP_ZTNA_MANAGEMENT_URL / WARP_ZTNA_SETUP_KEY / WARP_ZTNA_BASE_URL / WARP_ZTNA_SHA256
+  WARP_ZTNA_SERVICE_NAME / WARP_ZTNA_STATE_DIR / WARP_ZTNA_LOG_FILE / WARP_ZTNA_CONF_DIR
   WARP_ZTNA_FORCE / WARP_ZTNA_SUDO
 USAGE
 }
@@ -317,6 +333,66 @@ service_uninstall() {
   run_root "$CLI" service uninstall --service "$SERVICE"
 }
 
+normalize_host() {
+  printf '%s\n' "$1" | sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*$##' -e 's#:443$##'
+}
+
+live_management_host() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    return 1
+  fi
+  [ -x "$CLI" ] || return 1
+  "$CLI" status -d 2>/dev/null | sed -n 's/^Management: Connected to \(.*\)$/\1/p' | head -n 1
+}
+
+state_management_hosts() {
+  for state_file in "$STATE_DIR"/*.json; do
+    [ -f "$state_file" ] || continue
+    sed -n 's/.*"managementURL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$state_file"
+  done
+}
+
+foreign_management_host() {
+  target="$(normalize_host "$MANAGEMENT_URL")"
+  [ -n "$target" ] || return 1
+  candidates="$CURRENT_LIVE
+$(state_management_hosts)"
+  for url in $candidates; do
+    host="$(normalize_host "$url")"
+    if [ -n "$host" ] && [ "$host" != "$target" ]; then
+      printf '%s\n' "$host"
+      return 0
+    fi
+  done
+  return 1
+}
+
+switch_management_state() {
+  [ "$ENROLL" = "setup-key" ] || return 0
+  foreign="$(foreign_management_host || true)"
+  [ -n "$foreign" ] || return 0
+  target="$(normalize_host "$MANAGEMENT_URL")"
+  note "检测到本机既有 NetBird 连接或状态指向其他管理服务器（${foreign}），与本次入网目标（${target}）不一致："
+  note "  将清除本地 NetBird 状态（${STATE_DIR}）并切换到 ${target}；旧环境的连接配置不再保留（对端旧 peer 记录不受影响）。"
+  run_root rm -rf "$STATE_DIR"
+  run_root mkdir -p "$STATE_DIR"
+  run_root chmod 0700 "$STATE_DIR"
+}
+
+verify_management_target() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    return 0
+  fi
+  target="$(normalize_host "$MANAGEMENT_URL")"
+  [ -n "$target" ] || return 0
+  live="$(live_management_host || true)"
+  [ -n "$live" ] || die "入网后无法确认管理服务器地址（$CLI status -d 未给出 Management: Connected to 行），请用 $CLI status -d 复查。"
+  host="$(normalize_host "$live")"
+  if [ "$host" != "$target" ]; then
+    die "入网后校验失败：当前连接的 Management 为 ${host}，期望 ${target}（原始行：Management: Connected to ${live}）——setup key 未生效或未完成切换。"
+  fi
+}
+
 replace_official() {
   NB_BIN="$(command -v netbird)"
   note "替换同类组网客户端（${NB_BIN}）：停用并移除其服务、CLI 与桌面应用；其配置与状态目录保留。"
@@ -481,10 +557,13 @@ main() {
     return 0
   fi
 
+  CLI="$BIN_PATH"
+  CURRENT_LIVE="$(live_management_host || true)"
+
   case "$MODE" in
     upgrade)
       CLI="$BIN_PATH"
-      note "检测到既有 $SERVICE 服务，按升级处理（state 保留）：停用并注销 → 换二进制 → 重装服务 → 启动。"
+      note "检测到既有 $SERVICE 服务，按升级处理：停用并注销 → 换二进制 → 重装服务 → 启动。"
       service_stop || true
       service_uninstall || true
       if [ "$DRY_RUN" -eq 0 ] && service_installed; then
@@ -505,6 +584,7 @@ main() {
   fetch_artifact
   verify_checksum
   install_binary
+  switch_management_state
   service_install
 
   enroll
@@ -516,6 +596,7 @@ main() {
   fi
 
   if wait_connected; then
+    verify_management_target
     report_peer
     report_paths
     note "完成。"

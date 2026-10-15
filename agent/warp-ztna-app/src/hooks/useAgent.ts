@@ -498,6 +498,21 @@ export function useAgent(
       return;
     }
     if (ssoInFlightRef.current) return;
+    const meshStatus = await native.myMeshStatus().catch(() => null);
+    if (ssoInFlightRef.current) return;
+    if (meshStatus?.status === "pending") {
+      setConnection("needs-login");
+      setMainGate("welcome");
+      setPendingApproval(true);
+      return;
+    }
+    if (meshStatus?.status === "rejected") {
+      setConnection("needs-login");
+      setMainGate("welcome");
+      setPendingApproval(false);
+      setMeshRejected(true);
+      return;
+    }
     ssoInFlightRef.current = true;
     const runId = ++ssoRunRef.current;
     ssoActionRef.current = "login";
