@@ -8,9 +8,11 @@
 <h2>Warp ZTNA 引擎服务</h2>
 <p>本包安装 Warp ZTNA 引擎服务，不含桌面界面。继续安装前，按本机现状对照：</p>
 <ul>
-<li><strong>本机已安装引擎服务：</strong>按<strong>升级</strong>处理——停旧服务、换本包引擎、重新注册并启动（服务短暂中断）；状态目录（<code>/var/lib/warp-ztna</code>，本机入网身份所在）与配置目录（<code>/etc/warp-ztna</code>）<strong>默认保留</strong>。<strong>例外：</strong>本包预置了入网配置（<code>/etc/warp-ztna/enroll.conf</code>）时，安装会先清空旧的本机入网状态再按下发目标入网；未预置入网配置、但本机旧配置指向其他管理服务器时也会清空（当前激活的整份清空，其余残留 profile 单独移除）——应用将以产品默认管理服务器开始。升级同时会清理旧版引擎残留目录（<code>/etc/netbird</code> 等）中指向其他管理服务器的旧配置——新版引擎在原配置缺失时会自动搬运它，留着会让旧连接复活。以上清理均不影响对端已有记录。</li>
 <li><strong>尚未安装：</strong>直接安装即可。</li>
+<li><strong>本机已安装引擎服务：</strong>按<strong>升级</strong>处理——停旧服务、换本包引擎、重新注册并启动（服务短暂中断）；状态目录（<code>/var/lib/warp-ztna</code>，本机入网身份所在）与配置目录（<code>/etc/warp-ztna</code>）<strong>默认保留</strong>。</li>
+<li><strong>本机已安装引擎服务、旧配置指向其他管理服务器：</strong>停旧服务、换本包引擎、重新注册并启动（服务短暂中断），同时清空旧的本机入网状态——应用将以产品默认管理服务器开始。</li>
 </ul>
+<p>本包预置了入网配置（<code>/etc/warp-ztna/enroll.conf</code>）时，安装会先清空旧的本机入网状态再按下发目标入网。</p>
 <p>装完后，把同一镜像里的 Warp ZTNA 应用拖入 Applications 即可使用。</p>
 </body>
 </html>
