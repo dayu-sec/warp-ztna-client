@@ -239,10 +239,19 @@ jobs:
           set -eu
           v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
           assets="dist/assets/* dist/warp-ztna_${v}_scripts.tar.gz"
+          ref_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${GITHUB_REF_NAME}" --jq '.object.type')"
+          ref_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${GITHUB_REF_NAME}" --jq '.object.sha')"
+          if [ "$ref_type" = "tag" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${ref_sha}" --jq '.message' > dist/release-notes.md
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${ref_sha}" --jq '.commit.message' > dist/release-notes.md
+          fi
+          cat dist/release-notes.md
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $assets --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file dist/release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" $assets --title "$GITHUB_REF_NAME" --notes-from-tag --draft
+            gh release create "$GITHUB_REF_NAME" $assets --title "$GITHUB_REF_NAME" --notes-file dist/release-notes.md --draft
           fi
       - run: |
           echo "分发面：本仓 Release client-v<版本> 的资产（checksums.txt 覆盖全部资产）"
