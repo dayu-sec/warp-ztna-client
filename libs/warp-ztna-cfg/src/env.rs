@@ -167,6 +167,7 @@ pub struct ApiConfig {
     pub database_url: SecretString,
     pub oidc_issuer: String,
     pub oidc_audience: String,
+    pub portal_url: Option<String>,
     pub allowed_origins: Vec<String>,
     pub local_session_secure: bool,
     pub local_session_ttl_hours: i64,
@@ -385,6 +386,7 @@ impl ApiConfig {
             database_url: SecretString::from(required("WARP_DATABASE_URL")?),
             oidc_issuer,
             oidc_audience,
+            portal_url: optional_http_url("WARP_PORTAL_URL", optional("WARP_PORTAL_URL"))?,
             allowed_origins: parse_allowed_origins(
                 "WARP_ALLOWED_ORIGINS",
                 "http://localhost:5173,http://localhost:5174",
@@ -812,6 +814,22 @@ fn value(name: &'static str, default: &str) -> String {
     optional(name).unwrap_or_else(|| default.to_owned())
 }
 
+fn optional_http_url(
+    name: &'static str,
+    raw: Option<String>,
+) -> Result<Option<String>, ConfigError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.starts_with("https://") || value.starts_with("http://") {
+        Ok(Some(value.to_owned()))
+    } else {
+        Err(ConfigError::Invalid { name, value: raw })
+    }
+}
+
 const DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/dayu-sec/warp-ztna-client/releases/latest";
 
@@ -915,6 +933,24 @@ mod tests {
         }
         assert!(NetBirdManagedNaming::new("warp-ztna").is_ok());
         assert!(NetBirdManagedNaming::new(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn portal_url_is_optional_and_http_only() {
+        assert_eq!(optional_http_url("WARP_PORTAL_URL", None).expect("optional"), None);
+        assert_eq!(
+            optional_http_url("WARP_PORTAL_URL", Some("  ".to_owned())).expect("blank"),
+            None
+        );
+        assert_eq!(
+            optional_http_url("WARP_PORTAL_URL", Some("  https://portal.example  ".to_owned()))
+                .expect("valid"),
+            Some("https://portal.example".to_owned())
+        );
+        assert!(optional_http_url("WARP_PORTAL_URL", Some("portal.example".to_owned())).is_err());
+        assert!(
+            optional_http_url("WARP_PORTAL_URL", Some("ftp://portal.example".to_owned())).is_err()
+        );
     }
 
     #[test]

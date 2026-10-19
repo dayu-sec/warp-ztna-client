@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use log::LevelFilter;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, Manager,
     image::Image,
@@ -40,17 +40,33 @@ const API_TIMEOUT: Duration = Duration::from_secs(10);
 
 const API_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+const CLIENT_CONFIG_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Clone)]
+struct PlatformService {
+    portal_url: String,
+    api_auth: ApiOidc,
+}
+
 #[derive(Clone)]
 struct DesktopState {
     daemon_addr: String,
     api_base_url: String,
     api_token: Option<String>,
-    api_auth: ApiOidc,
-    portal_url: String,
+    platform: Arc<RwLock<PlatformService>>,
     user_email: Arc<Mutex<Option<String>>>,
     token_email: Arc<Mutex<Option<String>>>,
     hub: Arc<StatusHub>,
     task: Arc<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+}
+
+impl DesktopState {
+    fn platform(&self) -> PlatformService {
+        match self.platform.read() {
+            Ok(platform) => platform.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -412,10 +428,11 @@ async fn note_token_email(state: &DesktopState, token: &str) {
 
 async fn api_context(state: &DesktopState, context: &str) -> CmdResult<Option<(String, String)>> {
     let base = state.api_base_url.clone();
+    let platform = state.platform();
     let token = if let Some(token) = &state.api_token {
         token.clone()
-    } else if state.api_auth.is_configured() {
-        state.api_auth.access_token().await?
+    } else if platform.api_auth.is_configured() {
+        platform.api_auth.access_token().await?
     } else {
         log::debug!("{context}: OIDC is not configured; continuing without it");
         return Ok(None);
@@ -459,6 +476,89 @@ async fn api_get(
     response.json().await.or_err(Reason::External, context).map_err(Into::into)
 }
 
+#[derive(Debug, Deserialize)]
+struct ClientConfigResponse {
+    #[serde(default)]
+    portal_url: Option<String>,
+    oidc_issuer: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClientConfigStatus {
+    Present,
+    Missing,
+    Failed,
+}
+
+fn classify_client_config_status(code: u16) -> ClientConfigStatus {
+    if (200..300).contains(&code) {
+        ClientConfigStatus::Present
+    } else if matches!(code, 404 | 405) {
+        ClientConfigStatus::Missing
+    } else {
+        ClientConfigStatus::Failed
+    }
+}
+
+fn normalized_issuer(value: &str) -> &str {
+    value.trim().trim_end_matches('/')
+}
+
+fn accepted_portal_url(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() || service_config::validate_endpoint(value).is_err() {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn apply_client_config(platform: &mut PlatformService, response: &ClientConfigResponse) -> bool {
+    if let Some(portal_url) = accepted_portal_url(response.portal_url.as_deref()) {
+        platform.portal_url = portal_url;
+    }
+    let issuer = normalized_issuer(&response.oidc_issuer);
+    if issuer.is_empty() || issuer == platform.api_auth.issuer() {
+        return false;
+    }
+    platform.api_auth = platform.api_auth.with_issuer(issuer);
+    true
+}
+
+async fn fetch_client_config(base: &str, state: &DesktopState) -> Result<(), String> {
+    let url = format!("{base}/api/v1/client-config");
+    let response =
+        reqwest::Client::new().get(&url).timeout(CLIENT_CONFIG_TIMEOUT).send().await.map_err(
+            |cause| root_message(&because(Reason::External, "fetch client config", cause)),
+        )?;
+    let status = response.status().as_u16();
+    match classify_client_config_status(status) {
+        ClientConfigStatus::Present => {}
+        ClientConfigStatus::Missing => {
+            log::info!("api_probe: client config endpoint is absent; keeping fallbacks");
+            return Ok(());
+        }
+        ClientConfigStatus::Failed => return Err(format!("api client config HTTP {status}")),
+    }
+    let config = response
+        .json::<ClientConfigResponse>()
+        .await
+        .map_err(|error| format!("decode client config: {error}"))?;
+    let issuer_changed = {
+        let mut platform = match state.platform.write() {
+            Ok(platform) => platform,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let changed = apply_client_config(&mut platform, &config);
+        drop(platform);
+        changed
+    };
+    if issuer_changed {
+        *state.token_email.lock().await = None;
+    }
+    log::info!("api_probe: client config applied (issuer_changed={issuer_changed})");
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 struct ApiProbeDto {
     status: &'static str,
@@ -490,19 +590,33 @@ fn classify_probe_response(code: u16) -> (&'static str, Option<String>) {
 
 #[tauri::command]
 async fn api_probe(state: tauri::State<'_, DesktopState>) -> CmdResult<ApiProbeDto> {
-    if state.api_token.is_none() && !state.api_auth.is_configured() {
+    let base = state.api_base_url.trim_end_matches('/').to_owned();
+    let url = format!("{base}/health/ready");
+    log::info!("api_probe: probing {url}");
+    let status = match reqwest::Client::new().get(&url).timeout(API_PROBE_TIMEOUT).send().await {
+        Ok(response) => response.status().as_u16(),
+        Err(cause) => {
+            let error = because(Reason::External, "probe platform API", cause);
+            let outcome = ApiProbeDto::unreachable(root_message(&error));
+            log::info!("api_probe: status={} detail={:?}", outcome.status, outcome.detail);
+            return Ok(outcome);
+        }
+    };
+    if !(200..300).contains(&status) {
+        let outcome = ApiProbeDto::from_http_status(status);
+        log::info!("api_probe: status={} detail={:?}", outcome.status, outcome.detail);
+        return Ok(outcome);
+    }
+    if let Err(detail) = fetch_client_config(&base, &state).await {
+        log::warn!("api_probe: client config unavailable: {detail}");
+        return Ok(ApiProbeDto::unreachable(detail));
+    }
+    let platform = state.platform();
+    if state.api_token.is_none() && !platform.api_auth.is_configured() {
         log::warn!("api_probe: no API token source configured (WARP_API_TOKEN or OIDC)");
         return Ok(ApiProbeDto::unconfigured());
     }
-    let url = format!("{}/health/ready", state.api_base_url.trim_end_matches('/'));
-    log::info!("api_probe: probing {url}");
-    let outcome = match reqwest::Client::new().get(&url).timeout(API_PROBE_TIMEOUT).send().await {
-        Ok(response) => ApiProbeDto::from_http_status(response.status().as_u16()),
-        Err(cause) => {
-            let error = because(Reason::External, "probe platform API", cause);
-            ApiProbeDto::unreachable(root_message(&error))
-        }
-    };
+    let outcome = ApiProbeDto::from_http_status(status);
     log::info!("api_probe: status={} detail={:?}", outcome.status, outcome.detail);
     Ok(outcome)
 }
@@ -646,17 +760,18 @@ async fn current_user(state: tauri::State<'_, DesktopState>) -> CmdResult<Curren
 #[tauri::command]
 async fn acquire_api_session(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::info!("acquire_api_session: ensuring API token");
-    if state.api_token.is_some() || !state.api_auth.is_configured() {
+    let platform = state.platform();
+    if state.api_token.is_some() || !platform.api_auth.is_configured() {
         return Ok(());
     }
-    let _ = state.api_auth.access_token().await?;
+    let _ = platform.api_auth.access_token().await?;
     Ok(())
 }
 
 #[tauri::command]
 async fn clear_api_session(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::info!("clear_api_session: clearing API session");
-    state.api_auth.clear().await?;
+    state.platform().api_auth.clear().await?;
     Ok(())
 }
 
@@ -674,9 +789,10 @@ fn portal_view_url(base: &str, view: &str) -> String {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn open_portal(state: tauri::State<'_, DesktopState>, view: Option<String>) -> CmdResult<()> {
+    let platform = state.platform();
     let url = match view.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-        Some(view) => portal_view_url(&state.portal_url, view),
-        None => state.portal_url.clone(),
+        Some(view) => portal_view_url(&platform.portal_url, view),
+        None => platform.portal_url.clone(),
     };
     log::debug!("open_portal: opening access portal");
     open::that(url).or_err(Reason::External, "open portal").map_err(Into::into)
@@ -690,7 +806,7 @@ fn portal_help_url(base: &str) -> String {
 #[allow(clippy::needless_pass_by_value)]
 fn open_help(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::debug!("open_help: opening the help centre");
-    open::that(portal_help_url(&state.portal_url))
+    open::that(portal_help_url(&state.platform().portal_url))
         .or_err(Reason::External, "open help")
         .map_err(Into::into)
 }
@@ -928,7 +1044,7 @@ fn apply_win11_corners(hwnd: isize) {
 async fn quit_app(app: tauri::AppHandle, state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::info!("quit: requested");
     stop_status_stream(&state);
-    let _ = state.api_auth.clear().await;
+    let _ = state.platform().api_auth.clear().await;
     if let Ok(mut client) = connect_client(&state).await {
         let _ = client.down().await;
     }
@@ -1038,7 +1154,7 @@ fn tray_quit(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Some(state) = handle.try_state::<DesktopState>() {
             stop_status_stream(&state);
-            let _ = state.api_auth.clear().await;
+            let _ = state.platform().api_auth.clear().await;
             if let Ok(mut client) = MeshAgentRpc::connect_str(&state.daemon_addr).await {
                 let _ = client.down().await;
             }
@@ -1051,7 +1167,8 @@ fn tray_request_access(app: &AppHandle) {
     let Some(state) = app.try_state::<DesktopState>() else {
         return;
     };
-    let url = portal_view_url(&state.portal_url, "request");
+    let platform = state.platform();
+    let url = portal_view_url(&platform.portal_url, "request");
     log::info!("tray: request access requested");
     if let Err(cause) = open::that(url) {
         log::warn!("tray: open access portal failed: {cause}");
@@ -1193,9 +1310,7 @@ fn set_tray_menu(
 #[allow(clippy::struct_field_names)]
 struct ServiceConfigDto {
     stored_api_url: String,
-    stored_portal_url: String,
     effective_api_url: String,
-    effective_portal_url: String,
 }
 
 fn stored_service_config(app: &AppHandle) -> service_config::ServiceConfig {
@@ -1208,33 +1323,25 @@ fn get_service_config(app: AppHandle, state: tauri::State<'_, DesktopState>) -> 
     let stored = stored_service_config(&app);
     ServiceConfigDto {
         stored_api_url: stored.api_url,
-        stored_portal_url: stored.portal_url,
         effective_api_url: state.api_base_url.clone(),
-        effective_portal_url: state.portal_url.clone(),
     }
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn save_service_config(app: AppHandle, api_url: String, portal_url: String) -> CmdResult<()> {
-    for value in [&api_url, &portal_url] {
-        if let Err(message) = service_config::validate_endpoint(value) {
-            return Err(explain(Reason::InvalidArgument, message).into());
-        }
+fn save_service_config(app: AppHandle, api_url: String) -> CmdResult<()> {
+    if let Err(message) = service_config::validate_endpoint(&api_url) {
+        return Err(explain(Reason::InvalidArgument, message).into());
     }
     let dir = app.path().app_config_dir().map_err(|error| {
         log::warn!("save_service_config: cannot resolve config dir: {error}");
         CommandError::from(explain(Reason::External, "resolve app config dir"))
     })?;
-    let config = service_config::ServiceConfig {
-        api_url: api_url.trim().to_owned(),
-        portal_url: portal_url.trim().to_owned(),
-    };
-    service_config::save(&dir, &config).map_err(|error| {
+    service_config::save_api_url(&dir, &api_url).map_err(|error| {
         log::warn!("save_service_config: cannot write config: {error}");
         CommandError::from(explain(Reason::External, "write app config"))
     })?;
-    log::info!("save_service_config: endpoints stored");
+    log::info!("save_service_config: api url stored");
     Ok(())
 }
 
@@ -1279,7 +1386,7 @@ pub fn run() {
                 DEFAULT_API_URL,
             );
             let portal_url = service_config::endpoint(
-                std::env::var("WARP_PORTAL_URL").ok().as_deref(),
+                None,
                 Some(stored.portal_url.as_str()),
                 DEFAULT_PORTAL_URL,
             );
@@ -1287,8 +1394,10 @@ pub fn run() {
                 daemon_addr: AgentConfig::from_env().netbird_daemon_addr,
                 api_base_url,
                 api_token: std::env::var("WARP_API_TOKEN").ok().filter(|s| !s.is_empty()),
-                api_auth: ApiOidc::new(OidcConfig::from_env()),
-                portal_url,
+                platform: Arc::new(RwLock::new(PlatformService {
+                    portal_url,
+                    api_auth: ApiOidc::new(OidcConfig::from_env()),
+                })),
                 user_email: Arc::new(Mutex::new(None)),
                 token_email: Arc::new(Mutex::new(None)),
                 hub: Arc::new(StatusHub::default()),
@@ -1448,6 +1557,77 @@ mod tests {
         let unconfigured = serde_json::to_value(ApiProbeDto::unconfigured()).unwrap();
         assert_eq!(unconfigured["status"], "unconfigured");
         assert_eq!(unconfigured["detail"], serde_json::Value::Null);
+    }
+
+    fn test_platform() -> PlatformService {
+        PlatformService {
+            portal_url: "https://fallback.example".to_owned(),
+            api_auth: ApiOidc::new(OidcConfig {
+                issuer: "https://idp.example/realms/x".to_owned(),
+                client_id: "warp-ztna-app".to_owned(),
+                redirect_uri: "http://127.0.0.1:37123/oauth/callback".to_owned(),
+                scope: "openid".to_owned(),
+            }),
+        }
+    }
+
+    #[test]
+    fn client_config_status_separates_missing_and_failures() {
+        assert_eq!(classify_client_config_status(200), ClientConfigStatus::Present);
+        assert_eq!(classify_client_config_status(204), ClientConfigStatus::Present);
+        assert_eq!(classify_client_config_status(404), ClientConfigStatus::Missing);
+        assert_eq!(classify_client_config_status(405), ClientConfigStatus::Missing);
+        assert_eq!(classify_client_config_status(500), ClientConfigStatus::Failed);
+    }
+
+    #[test]
+    fn client_config_decodes_explicit_and_missing_portal() {
+        let config: ClientConfigResponse = serde_json::from_str(
+            r#"{"portal_url":null,"oidc_issuer":"https://idp.example/realms/x"}"#,
+        )
+        .expect("explicit null");
+        assert!(config.portal_url.is_none());
+        assert_eq!(config.oidc_issuer, "https://idp.example/realms/x");
+
+        let config: ClientConfigResponse =
+            serde_json::from_str(r#"{"oidc_issuer":"https://idp.example/realms/x"}"#)
+                .expect("missing portal");
+        assert!(config.portal_url.is_none());
+
+        assert!(
+            serde_json::from_str::<ClientConfigResponse>(r#"{"portal_url":"https://p"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn client_config_applies_portal_and_issuer() {
+        let mut platform = test_platform();
+        let changed = apply_client_config(
+            &mut platform,
+            &ClientConfigResponse {
+                portal_url: Some(" https://portal.example/ ".to_owned()),
+                oidc_issuer: " https://idp.example/realms/y/ ".to_owned(),
+            },
+        );
+        assert!(changed);
+        assert_eq!(platform.portal_url, "https://portal.example/");
+        assert_eq!(platform.api_auth.issuer(), "https://idp.example/realms/y");
+    }
+
+    #[test]
+    fn client_config_ignores_invalid_portal_and_same_issuer() {
+        let mut platform = test_platform();
+        let before = platform.api_auth.issuer().to_owned();
+        let changed = apply_client_config(
+            &mut platform,
+            &ClientConfigResponse {
+                portal_url: Some("portal.example".to_owned()),
+                oidc_issuer: format!("{before}/"),
+            },
+        );
+        assert!(!changed);
+        assert_eq!(platform.portal_url, "https://fallback.example");
+        assert_eq!(platform.api_auth.issuer(), before);
     }
 
     #[test]

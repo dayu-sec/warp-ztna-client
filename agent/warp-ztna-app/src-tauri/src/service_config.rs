@@ -45,6 +45,12 @@ pub fn save(dir: &Path, config: &ServiceConfig) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
+pub fn save_api_url(dir: &Path, api_url: &str) -> std::io::Result<()> {
+    let mut config = load(dir);
+    api_url.trim().clone_into(&mut config.api_url);
+    save(dir, &config)
+}
+
 pub fn endpoint(env: Option<&str>, stored: Option<&str>, default: &str) -> String {
     for value in [env, stored].into_iter().flatten() {
         let value = value.trim();
@@ -102,6 +108,26 @@ mod tests {
         save(&dir, &config).expect("save config");
         let loaded = load(&dir);
         assert_eq!(loaded.api_url, "https://api.example");
+        assert_eq!(loaded.portal_url, "https://portal.example");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_api_url_preserves_the_legacy_portal_url() {
+        let dir = std::env::temp_dir()
+            .join(format!("warp-ztna-service-config-api-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        save(
+            &dir,
+            &ServiceConfig {
+                api_url: "https://old.example".into(),
+                portal_url: "https://portal.example".into(),
+            },
+        )
+        .expect("seed config");
+        save_api_url(&dir, "  https://new.example  ").expect("save api url");
+        let loaded = load(&dir);
+        assert_eq!(loaded.api_url, "https://new.example");
         assert_eq!(loaded.portal_url, "https://portal.example");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -3,13 +3,10 @@ import { formatInvokeError, isTauri, native } from "../api/native";
 
 export type ServiceConfigState = {
   apiUrl: string;
-  portalUrl: string;
   effectiveApiUrl: string;
-  effectivePortalUrl: string;
   needRestart: boolean;
   saving: boolean;
   setApiUrl: (value: string) => void;
-  setPortalUrl: (value: string) => void;
   save: () => Promise<void>;
   restart: () => void;
 };
@@ -19,9 +16,7 @@ export function useServiceConfig(
   showToast: (msg: string) => void,
 ): ServiceConfigState {
   const [apiUrl, setApiUrl] = useState("");
-  const [portalUrl, setPortalUrl] = useState("");
   const [effectiveApiUrl, setEffectiveApiUrl] = useState("");
-  const [effectivePortalUrl, setEffectivePortalUrl] = useState("");
   const [needRestart, setNeedRestart] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -30,9 +25,7 @@ export function useServiceConfig(
     const config = await native.getServiceConfig().catch(() => null);
     if (!config) return;
     setApiUrl(config.stored_api_url);
-    setPortalUrl(config.stored_portal_url);
     setEffectiveApiUrl(config.effective_api_url);
-    setEffectivePortalUrl(config.effective_portal_url);
   }, []);
 
   useEffect(() => {
@@ -44,10 +37,8 @@ export function useServiceConfig(
     setSaving(true);
     try {
       const api = apiUrl.trim();
-      const portal = portalUrl.trim();
-      await native.saveServiceConfig(api, portal);
+      await native.saveServiceConfig(api);
       setApiUrl(api);
-      setPortalUrl(portal);
       setNeedRestart(true);
       showToast(tr("serviceConfig.saved"));
     } catch (cause) {
@@ -63,13 +54,10 @@ export function useServiceConfig(
 
   return {
     apiUrl,
-    portalUrl,
     effectiveApiUrl,
-    effectivePortalUrl,
     needRestart,
     saving,
     setApiUrl,
-    setPortalUrl,
     save,
     restart,
   };

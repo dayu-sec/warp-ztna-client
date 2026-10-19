@@ -21,6 +21,7 @@ const REDIRECT_PORT: u16 = 37_123;
 const CALLBACK_TIMEOUT: Duration = Duration::from_mins(3);
 const ISSUER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_OIDC_ISSUER: &str = "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna";
 
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -33,8 +34,7 @@ pub struct OidcConfig {
 impl OidcConfig {
     pub fn from_env() -> Self {
         Self {
-            issuer: std::env::var("WARP_OIDC_ISSUER")
-                .unwrap_or_else(|_| "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna".to_owned()),
+            issuer: DEFAULT_OIDC_ISSUER.to_owned(),
             client_id: std::env::var("WARP_OIDC_CLIENT_ID")
                 .unwrap_or_else(|_| "warp-ztna-app".to_owned()),
             redirect_uri: "http://127.0.0.1:37123/oauth/callback".to_owned(),
@@ -147,6 +147,16 @@ impl ApiOidc {
 
     pub fn is_configured(&self) -> bool {
         !self.config.issuer.trim().is_empty()
+    }
+
+    pub fn issuer(&self) -> &str {
+        &self.config.issuer
+    }
+
+    pub fn with_issuer(&self, issuer: &str) -> Self {
+        let mut config = (*self.config).clone();
+        config.issuer = normalize_issuer(issuer);
+        Self::new(config)
     }
 
     pub async fn access_token(&self) -> Result<String> {
@@ -487,6 +497,10 @@ fn callback_params(request_line: &str) -> Option<CallbackParams> {
     Some(CallbackParams { code, error, state })
 }
 
+fn normalize_issuer(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_owned()
+}
+
 fn random_urlsafe(len: usize) -> Result<String> {
     let mut bytes = vec![0_u8; len];
     getrandom(&mut bytes).or_err(Reason::Internal, "generate random bytes")?;
@@ -522,6 +536,31 @@ mod tests {
             redirect_uri: "http://127.0.0.1:37123/oauth/callback".to_owned(),
             scope: "openid profile email offline_access warp-ztna-api".to_owned(),
         }
+    }
+
+    #[test]
+    fn default_issuer_is_the_production_realm() {
+        assert_eq!(OidcConfig::from_env().issuer, DEFAULT_OIDC_ISSUER);
+    }
+
+    #[tokio::test]
+    async fn with_issuer_preserves_configuration_and_resets_the_token_cache() {
+        let client = ApiOidc::new(test_config());
+        client
+            .cache_tokens(TokenResponse {
+                access_token: "access".to_owned(),
+                expires_in: Some(300),
+                refresh_token: Some("refresh".to_owned()),
+            })
+            .await;
+
+        let next = client.with_issuer("  https://idp.example/realms/x/  ");
+        assert_eq!(next.issuer(), "https://idp.example/realms/x");
+        assert_eq!(next.config.client_id, test_config().client_id);
+        assert_eq!(next.config.redirect_uri, test_config().redirect_uri);
+        assert_eq!(next.config.scope, test_config().scope);
+        assert!(next.cached_access_token().await.is_none());
+        assert!(client.cached_access_token().await.is_some());
     }
 
     #[test]

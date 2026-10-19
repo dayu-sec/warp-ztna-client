@@ -167,9 +167,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 
 export type ServiceConfig = {
   stored_api_url: string;
-  stored_portal_url: string;
   effective_api_url: string;
-  effective_portal_url: string;
 };
 
 export const native = {
@@ -221,8 +219,7 @@ export const native = {
     call<SshLaunchPlan>("ssh_launch", { requestId, address }),
   quitApp: () => call<void>("quit_app"),
   getServiceConfig: () => call<ServiceConfig>("get_service_config"),
-  saveServiceConfig: (apiUrl: string, portalUrl: string) =>
-    call<void>("save_service_config", { apiUrl, portalUrl }),
+  saveServiceConfig: (apiUrl: string) => call<void>("save_service_config", { apiUrl }),
   restartApp: () => call<void>("restart_app"),
   startDragging: async () => {
     if (!isTauri()) return;

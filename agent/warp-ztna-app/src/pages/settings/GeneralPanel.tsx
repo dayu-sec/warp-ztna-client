@@ -99,17 +99,6 @@ export function GeneralPanel({
             />
           </span>
         </label>
-        <label className="row">
-          <span>{tr("serviceConfig.portal")}</span>
-          <span className="svc-field">
-            <input
-              value={serviceConfig.portalUrl}
-              onChange={(e) => serviceConfig.setPortalUrl(e.target.value)}
-              placeholder={serviceConfig.effectivePortalUrl}
-              aria-label={tr("serviceConfig.portal")}
-            />
-          </span>
-        </label>
         {serviceConfig.needRestart && (
           <div className="row">
             <p className="row-sub">{tr("serviceConfig.saved")}</p>
