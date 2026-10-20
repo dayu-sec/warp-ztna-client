@@ -11,6 +11,7 @@ import {
   IconCheck,
   IconChevron,
   IconClear,
+  IconCommandCopy,
   IconCopy,
   IconEmptyLock,
   IconFolderTree,
@@ -73,6 +74,7 @@ function ResourceRowView({
   onCopy,
   onOpenDest,
   onSsh,
+  onSshCopy,
   sshBusyKey,
 }: {
   row: ResourceRow;
@@ -80,6 +82,7 @@ function ResourceRowView({
   onCopy: (text: string) => void;
   onOpenDest: (address: string) => void;
   onSsh: (row: ResourceRow) => void;
+  onSshCopy: (row: ResourceRow) => void;
   sshBusyKey: string | null;
 }) {
   const sshBusy = sshBusyKey === row.key;
@@ -120,16 +123,28 @@ function ResourceRowView({
           <IconCheck />
         </button>
         {row.ssh && (
-          <button
-            type="button"
-            className="ico-btn ssh"
-            disabled={sshBusy || !row.live || row.ssh.state !== "issued"}
-            title={sshHint(row, tr, sshBusy)}
-            onClick={() => void onSsh(row)}
-            aria-label={tr("resources.ssh")}
-          >
-            <IconTerminal />
-          </button>
+          <>
+            <button
+              type="button"
+              className="ico-btn"
+              disabled={sshBusy || !row.live || row.ssh.state !== "issued"}
+              title={tr("ssh.copyCommand")}
+              onClick={() => void onSshCopy(row)}
+              aria-label={tr("ssh.copyCommand")}
+            >
+              <IconCommandCopy />
+            </button>
+            <button
+              type="button"
+              className="ico-btn ssh"
+              disabled={sshBusy || !row.live || row.ssh.state !== "issued"}
+              title={sshHint(row, tr, sshBusy)}
+              onClick={() => void onSsh(row)}
+              aria-label={tr("resources.ssh")}
+            >
+              <IconTerminal />
+            </button>
+          </>
         )}
         {isLaunchable(row.address, row.kind) && (
           <button
@@ -168,6 +183,7 @@ export function HomePage({
   onCopy,
   onOpenDest,
   onSsh,
+  onSshCopy,
   onRequestAccess,
   onRefreshAssets,
 }: {
@@ -192,6 +208,7 @@ export function HomePage({
   onCopy: (text: string) => void;
   onOpenDest: (address: string) => void;
   onSsh: (row: ResourceRow) => void;
+  onSshCopy: (row: ResourceRow) => void;
   onRequestAccess: () => void;
   onRefreshAssets: () => void;
 }) {
@@ -448,6 +465,7 @@ export function HomePage({
                                     onCopy={onCopy}
                                     onOpenDest={onOpenDest}
                                     onSsh={onSsh}
+                                    onSshCopy={onSshCopy}
                                     sshBusyKey={sshBusyKey}
                                   />
                                 ))}
@@ -463,6 +481,7 @@ export function HomePage({
                             onCopy={onCopy}
                             onOpenDest={onOpenDest}
                             onSsh={onSsh}
+                            onSshCopy={onSshCopy}
                             sshBusyKey={sshBusyKey}
                           />
                         ))}
@@ -481,6 +500,7 @@ export function HomePage({
                     onCopy={onCopy}
                     onOpenDest={onOpenDest}
                     onSsh={onSsh}
+                    onSshCopy={onSshCopy}
                     sshBusyKey={sshBusyKey}
                   />
                 ))}

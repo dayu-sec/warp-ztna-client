@@ -15,6 +15,7 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "log:default",
-    "notification:default"
+    "notification:default",
+    "clipboard-manager:allow-write-text"
   ]
 }

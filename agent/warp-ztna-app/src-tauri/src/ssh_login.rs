@@ -12,14 +12,13 @@ use serde::Serialize;
 use ssh_key::{Certificate, HashAlg, PublicKey};
 
 use crate::error::{
-    CmdResult, CommandError, SSH_CERT_NOT_READY_CODE, SSH_LOCAL_CONFIG_CODE, SSH_NO_LOCAL_KEY_CODE,
+    CmdResult, CommandError, SSH_CERT_NOT_READY_CODE, SSH_LOCAL_CONFIG_CODE,
     SSH_UNSUPPORTED_ACCOUNT_CODE,
 };
 use crate::process::{run_osascript, wait_within_status};
 
 const ACCOUNT_MAX_CHARS: usize = 64;
 const HOST_MAX_CHARS: usize = 253;
-const CERTIFICATE_SUFFIX: &str = "-cert.pub";
 const PUBLIC_KEY_SUFFIX: &str = ".pub";
 const PROBE_BUDGET: Duration = Duration::from_secs(3);
 const PROBE_BUDGET_WINDOWS: Duration = Duration::from_secs(5);
@@ -57,7 +56,6 @@ impl Platform {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LaunchStatus {
     Launched,
-    NeedsConfig,
     CopyOnly,
 }
 
@@ -73,7 +71,6 @@ pub(crate) enum KnownHostsAction {
 pub(crate) struct ResolvedKey {
     pub(crate) key_path: PathBuf,
     pub(crate) fingerprint: String,
-    pub(crate) loadable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,7 +80,6 @@ pub(crate) struct SshLaunchDto {
     pub(crate) host: String,
     pub(crate) account: String,
     pub(crate) command: String,
-    pub(crate) alternate_command: Option<String>,
     pub(crate) launch_error: Option<String>,
     pub(crate) key_path: String,
     pub(crate) certificate_path: String,
@@ -92,11 +88,18 @@ pub(crate) struct SshLaunchDto {
     pub(crate) known_hosts_path: String,
     pub(crate) known_hosts_action: KnownHostsAction,
     pub(crate) known_hosts_pattern: Option<String>,
-    pub(crate) replaced_certificate_file: bool,
     pub(crate) terminal_available: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct SshPrepareDto {
+    pub(crate) command: String,
+    pub(crate) key_path: String,
+    pub(crate) certificate_path: String,
+}
+
 pub(crate) struct LaunchRequest {
+    pub(crate) request_id: String,
     pub(crate) home: PathBuf,
     pub(crate) account: String,
     pub(crate) host: String,
@@ -105,6 +108,13 @@ pub(crate) struct LaunchRequest {
     pub(crate) certificate_serial: Option<String>,
     pub(crate) certificate_valid_before: Option<String>,
     pub(crate) known_hosts_line: String,
+}
+
+struct PreparedLaunch {
+    certificate_path: PathBuf,
+    tokens: Vec<String>,
+    known_hosts_action: KnownHostsAction,
+    known_hosts_pattern: Option<String>,
 }
 
 fn valid_account(account: &str) -> bool {
@@ -129,6 +139,8 @@ fn ssh_tokens(explicit: Option<(&Path, &Path)>, account: &str, host: &str) -> Op
     if let Some((key_path, certificate_path)) = explicit {
         tokens.push("-i".to_owned());
         tokens.push(key_path.to_string_lossy().into_owned());
+        tokens.push("-o".to_owned());
+        tokens.push("IdentitiesOnly=yes".to_owned());
         tokens.push("-o".to_owned());
         tokens.push(format!("CertificateFile={}", certificate_path.to_string_lossy()));
     }
@@ -219,9 +231,20 @@ fn sibling_public_key(key_path: &Path) -> Option<PathBuf> {
     Some(key_path.with_file_name(format!("{name}{PUBLIC_KEY_SUFFIX}")))
 }
 
-fn certificate_path_for(key_path: &Path) -> Option<PathBuf> {
-    let name = key_path.file_name()?.to_str()?;
-    Some(key_path.with_file_name(format!("{name}{CERTIFICATE_SUFFIX}")))
+fn valid_request_id(value: &str) -> bool {
+    value.len() == 36
+        && value.char_indices().all(|(index, character)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                character == '-'
+            } else {
+                character.is_ascii_hexdigit()
+            }
+        })
+}
+
+pub(crate) fn ticket_certificate_path(home: &Path, request_id: &str) -> Option<PathBuf> {
+    valid_request_id(request_id)
+        .then(|| home.join(".ssh").join("warp-ztna").join(format!("{request_id}-cert.pub")))
 }
 
 fn usably_paired(key_path: &Path) -> bool {
@@ -333,26 +356,15 @@ pub(crate) fn resolve_signing_key(
     let mut installed = None;
     for fingerprint in fingerprints {
         if let Some(key_path) = matching_key(&loadable, fingerprint) {
-            return Some(ResolvedKey {
-                key_path,
-                fingerprint: fingerprint.clone(),
-                loadable: true,
-            });
+            return Some(ResolvedKey { key_path, fingerprint: fingerprint.clone() });
         }
         if installed.is_none() {
             let scanned = scanned_public_key_paths(&home.join(".ssh"));
-            installed = matching_key(&scanned, fingerprint).map(|key_path| ResolvedKey {
-                key_path,
-                fingerprint: fingerprint.clone(),
-                loadable: false,
-            });
+            installed = matching_key(&scanned, fingerprint)
+                .map(|key_path| ResolvedKey { key_path, fingerprint: fingerprint.clone() });
         }
     }
     installed
-}
-
-pub(crate) fn certificate_path_for_key(key_path: &Path) -> Option<PathBuf> {
-    certificate_path_for(key_path)
 }
 
 pub(crate) fn certificate_is_current(text: &str) -> bool {
@@ -470,21 +482,14 @@ fn ensure_ssh_dir(ssh_dir: &Path) -> Result<(), String> {
     ssh_dir_builder().create(ssh_dir).map_err(|error| error.to_string())
 }
 
-fn write_certificate(path: &Path, text: &str) -> Result<bool, String> {
-    let existing = fs::read_to_string(path).ok();
-    let replacing_foreign_file = existing
-        .as_deref()
-        .is_some_and(|existing| Certificate::from_openssh(existing.trim()).is_err());
-    if replacing_foreign_file {
-        log::warn!("ssh_login: replacing a file that is not an OpenSSH certificate");
-    }
+fn write_certificate(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         ensure_ssh_dir(parent)?;
     }
     let mut file = write_options().open(path).map_err(|error| error.to_string())?;
     file.write_all(text.trim().as_bytes()).map_err(|error| error.to_string())?;
     file.write_all(b"\n").map_err(|error| error.to_string())?;
-    Ok(existing.is_some())
+    Ok(())
 }
 
 fn ensure_known_hosts(
@@ -571,76 +576,78 @@ fn open_terminal(platform: Platform, tokens: &[String]) -> Result<(), String> {
     }
 }
 
-pub(crate) fn launch(request: &LaunchRequest) -> CmdResult<SshLaunchDto> {
-    let platform = Platform::current();
-    let Some(tokens) = ssh_tokens(None, &request.account, &request.host) else {
-        return Err(CommandError::coded(
-            SSH_UNSUPPORTED_ACCOUNT_CODE,
-            "the login account or host cannot be passed to a shell safely",
-        ));
-    };
+fn prepare(request: &LaunchRequest) -> CmdResult<PreparedLaunch> {
     if !certificate_is_current(&request.certificate) {
         return Err(CommandError::coded(
             SSH_CERT_NOT_READY_CODE,
             "the certificate is expired or not yet valid",
         ));
     }
-    let Some(certificate_path) = certificate_path_for(&request.key.key_path) else {
+    let Some(certificate_path) = ticket_certificate_path(&request.home, &request.request_id) else {
         return Err(CommandError::coded(
-            SSH_NO_LOCAL_KEY_CODE,
-            "the private key has no usable file name",
+            SSH_LOCAL_CONFIG_CODE,
+            "the ticket id cannot be used as a certificate file name",
         ));
     };
-    let replaced_certificate_file = write_certificate(&certificate_path, &request.certificate)
+    write_certificate(&certificate_path, &request.certificate)
         .map_err(|error| CommandError::coded(SSH_LOCAL_CONFIG_CODE, error))?;
     let ssh_dir = request.home.join(".ssh");
     let known_hosts_path = ssh_dir.join("known_hosts");
     let (known_hosts_action, known_hosts_pattern) =
         ensure_known_hosts(&known_hosts_path, &request.known_hosts_line)
             .map_err(|error| CommandError::coded(SSH_LOCAL_CONFIG_CODE, error))?;
-    let explicit = ssh_tokens(
+    let Some(tokens) = ssh_tokens(
         Some((&request.key.key_path, &certificate_path)),
         &request.account,
         &request.host,
-    );
-    let alternate_command = explicit.as_deref().map(shell_join);
+    ) else {
+        return Err(CommandError::coded(
+            SSH_UNSUPPORTED_ACCOUNT_CODE,
+            "the login account or host cannot be passed to a shell safely",
+        ));
+    };
+    Ok(PreparedLaunch { certificate_path, tokens, known_hosts_action, known_hosts_pattern })
+}
+
+pub(crate) fn prepare_dto(request: &LaunchRequest) -> CmdResult<SshPrepareDto> {
+    let prepared = prepare(request)?;
+    let command = shell_join(&prepared.tokens);
+    log::info!("ssh_prepare: {command}");
+    Ok(SshPrepareDto {
+        command,
+        key_path: request.key.key_path.to_string_lossy().into_owned(),
+        certificate_path: prepared.certificate_path.to_string_lossy().into_owned(),
+    })
+}
+
+pub(crate) fn launch(request: &LaunchRequest) -> CmdResult<SshLaunchDto> {
+    let platform = Platform::current();
+    let prepared = prepare(request)?;
     let mut status = LaunchStatus::CopyOnly;
     let mut launch_error = None;
-    if request.key.loadable {
-        match open_terminal(platform, &tokens) {
-            Ok(()) => status = LaunchStatus::Launched,
-            Err(error) => launch_error = Some(error),
-        }
-    }
-    if status != LaunchStatus::Launched
-        && let Some(explicit) = explicit.as_deref()
-    {
-        match open_terminal(platform, explicit) {
-            Ok(()) => status = LaunchStatus::NeedsConfig,
-            Err(error) => {
-                launch_error = Some(match launch_error {
-                    Some(first) => format!("{first}; {error}"),
-                    None => error,
-                });
-            }
-        }
+    match open_terminal(platform, &prepared.tokens) {
+        Ok(()) => status = LaunchStatus::Launched,
+        Err(error) => launch_error = Some(error),
     }
     Ok(SshLaunchDto {
         status,
         platform,
         host: request.host.clone(),
         account: request.account.clone(),
-        command: tokens.join(" "),
-        alternate_command,
+        command: shell_join(&prepared.tokens),
         launch_error,
         key_path: request.key.key_path.to_string_lossy().into_owned(),
-        certificate_path: certificate_path.to_string_lossy().into_owned(),
+        certificate_path: prepared.certificate_path.to_string_lossy().into_owned(),
         certificate_serial: request.certificate_serial.clone(),
         certificate_valid_before: request.certificate_valid_before.clone(),
-        known_hosts_path: known_hosts_path.to_string_lossy().into_owned(),
-        known_hosts_action,
-        known_hosts_pattern,
-        replaced_certificate_file,
+        known_hosts_path: request
+            .home
+            .join(".ssh")
+            .join("known_hosts")
+            .to_string_lossy()
+            .into_owned(),
+        known_hosts_action: prepared.known_hosts_action,
+        known_hosts_pattern: prepared.known_hosts_pattern,
         terminal_available: platform != Platform::Other,
     })
 }
@@ -748,6 +755,8 @@ mod tests {
                 "-i",
                 "/home/dev/.ssh/id_work",
                 "-o",
+                "IdentitiesOnly=yes",
+                "-o",
                 "CertificateFile=/home/dev/.ssh/id_work-cert.pub",
                 "root@10.20.1.5",
             ]
@@ -778,7 +787,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             shell_join(&tokens),
-            "ssh -i /home/dev/.ssh/id_work -o CertificateFile=/home/dev/.ssh/id_work-cert.pub root@10.20.1.5"
+            "ssh -i /home/dev/.ssh/id_work -o IdentitiesOnly=yes -o CertificateFile=/home/dev/.ssh/id_work-cert.pub root@10.20.1.5"
         );
     }
 
@@ -816,16 +825,16 @@ mod tests {
     }
 
     #[test]
-    fn certificate_paths_append_the_suffix_to_the_file_name() {
+    fn ticket_certificates_live_under_the_warp_ztna_directory() {
+        let home = Path::new("/home/dev");
         assert_eq!(
-            certificate_path_for(Path::new("/home/dev/.ssh/id_ed25519")),
-            Some(PathBuf::from("/home/dev/.ssh/id_ed25519-cert.pub"))
+            ticket_certificate_path(home, "2f2f0d5a-1e4b-4c3d-9a8b-7c6d5e4f3a21"),
+            Some(PathBuf::from(
+                "/home/dev/.ssh/warp-ztna/2f2f0d5a-1e4b-4c3d-9a8b-7c6d5e4f3a21-cert.pub"
+            ))
         );
-        assert_eq!(
-            certificate_path_for(Path::new("/home/dev/.ssh/id_ed25519.work")),
-            Some(PathBuf::from("/home/dev/.ssh/id_ed25519.work-cert.pub"))
-        );
-        assert_eq!(certificate_path_for(Path::new("/")), None);
+        assert_eq!(ticket_certificate_path(home, "../../etc/passwd"), None);
+        assert_eq!(ticket_certificate_path(home, ""), None);
     }
 
     #[test]

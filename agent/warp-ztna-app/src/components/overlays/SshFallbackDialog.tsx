@@ -11,11 +11,7 @@ export function sshFallbackReason(
 }
 
 export function sshFallbackCommands(plan: SshLaunchPlan) {
-  const commands = [plan.command];
-  if (plan.alternate_command && plan.alternate_command !== plan.command) {
-    commands.push(plan.alternate_command);
-  }
-  return commands;
+  return [plan.command];
 }
 
 export function SshFallbackDialog({

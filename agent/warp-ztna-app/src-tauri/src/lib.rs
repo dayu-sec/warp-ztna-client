@@ -811,16 +811,16 @@ fn open_help(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
         .map_err(Into::into)
 }
 
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
-async fn ssh_launch(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopState>,
+#[allow(clippy::too_many_lines)]
+async fn prepare_ssh_launch(
+    app: &tauri::AppHandle,
+    state: &DesktopState,
     request_id: String,
     address: String,
-) -> CmdResult<ssh_login::SshLaunchDto> {
-    log::info!("ssh_launch: preparing a terminal session");
-    let Some((base, token)) = api_context(&state, "ssh_launch").await? else {
+    operation: &str,
+) -> CmdResult<ssh_login::LaunchRequest> {
+    log::info!("{operation}: preparing an ssh session");
+    let Some((base, token)) = api_context(state, operation).await? else {
         return Err(CommandError::coded(
             Reason::Unauthorized.code(),
             "the API session is not available",
@@ -831,17 +831,19 @@ async fn ssh_launch(
     let config =
         api_get(&base, "api/v1/me/ssh-client-config", &token, "fetch ssh client config").await?;
     let wanted = address_key(&address);
-    let account = config
-        .get("hosts")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|hosts| {
-            hosts.iter().find(|host| {
-                host.get("address")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|value| address_key(value) == wanted)
-            })
+    let host = config.get("hosts").and_then(serde_json::Value::as_array).and_then(|hosts| {
+        hosts.iter().find(|host| {
+            host.get("address")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| address_key(value) == wanted)
         })
+    });
+    let account = host
         .and_then(|host| host.get("login_account"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let host_principal = host
+        .and_then(|host| host.get("host_principal"))
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
     let Some(account) = account else {
@@ -850,6 +852,7 @@ async fn ssh_launch(
             "no registered ssh host covers this address",
         ));
     };
+    let expected_principal = host_principal.unwrap_or_else(|| account.clone());
     let candidates = certificates
         .as_array()
         .map(|items| {
@@ -905,6 +908,7 @@ async fn ssh_launch(
         let home = home.clone();
         let account = account.clone();
         let address = address.clone();
+        let request_id = request_id.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let key =
                 ssh_login::resolve_signing_key(&home, platform, &account, &address, &fingerprints)?;
@@ -912,7 +916,7 @@ async fn ssh_launch(
                 .iter()
                 .find(|(fingerprint, _)| fingerprint == &key.fingerprint)
                 .and_then(|(_, serial)| serial.clone());
-            let on_disk = ssh_login::certificate_path_for_key(&key.key_path)
+            let on_disk = ssh_login::ticket_certificate_path(&home, &request_id)
                 .and_then(|path| ssh_login::existing_certificate(&path, serial.as_deref()));
             Some((key, on_disk))
         })
@@ -960,10 +964,11 @@ async fn ssh_launch(
         })?
     };
     let principals = ssh_login::certificate_principals(&text).unwrap_or_default();
-    if !principals.iter().any(|principal| principal == &account) {
+    if !principals.iter().any(|principal| principal == &expected_principal || principal == &account)
+    {
         return Err(CommandError::coded(
             SSH_PRINCIPAL_MISMATCH_CODE,
-            "the certificate does not cover the registered login account",
+            "the certificate does not cover this host",
         ));
     }
     let known_hosts_line = config
@@ -973,7 +978,8 @@ async fn ssh_launch(
         .ok_or_else(|| {
             CommandError::coded(SSH_CERT_NOT_READY_CODE, "the API returned no host authority line")
         })?;
-    let request = ssh_login::LaunchRequest {
+    Ok(ssh_login::LaunchRequest {
+        request_id,
         home,
         account,
         host: address,
@@ -988,8 +994,33 @@ async fn ssh_launch(
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
         known_hosts_line,
-    };
+    })
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn ssh_launch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    request_id: String,
+    address: String,
+) -> CmdResult<ssh_login::SshLaunchDto> {
+    let request = prepare_ssh_launch(&app, &state, request_id, address, "ssh_launch").await?;
     tauri::async_runtime::spawn_blocking(move || ssh_login::launch(&request))
+        .await
+        .map_err(|error| CommandError::coded(Reason::Internal.code(), error.to_string()))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn ssh_prepare(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    request_id: String,
+    address: String,
+) -> CmdResult<ssh_login::SshPrepareDto> {
+    let request = prepare_ssh_launch(&app, &state, request_id, address, "ssh_prepare").await?;
+    tauri::async_runtime::spawn_blocking(move || ssh_login::prepare_dto(&request))
         .await
         .map_err(|error| CommandError::coded(Reason::Internal.code(), error.to_string()))?
 }
@@ -1372,6 +1403,7 @@ pub fn run() {
         .plugin(log_builder.build())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let stored = app
                 .path()
@@ -1481,6 +1513,7 @@ pub fn run() {
             open_portal,
             open_help,
             ssh_launch,
+            ssh_prepare,
             start_dragging,
             minimize_window,
             toggle_maximize_window,

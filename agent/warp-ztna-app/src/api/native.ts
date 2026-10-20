@@ -86,12 +86,11 @@ export type TrayResource = {
 };
 
 export type SshLaunchPlan = {
-  status: "launched" | "needs_config" | "copy_only";
+  status: "launched" | "copy_only";
   platform: "macos" | "windows" | "linux" | "other";
   host: string;
   account: string;
   command: string;
-  alternate_command?: string | null;
   launch_error?: string | null;
   key_path: string;
   certificate_path: string;
@@ -100,8 +99,13 @@ export type SshLaunchPlan = {
   known_hosts_path: string;
   known_hosts_action: "appended" | "already_trusted" | "kept_other_pattern";
   known_hosts_pattern?: string | null;
-  replaced_certificate_file: boolean;
   terminal_available: boolean;
+};
+
+export type SshPreparePlan = {
+  command: string;
+  key_path: string;
+  certificate_path: string;
 };
 
 export const PENDING_APPROVAL_CODE = "biz.pending_approval";
@@ -217,6 +221,8 @@ export const native = {
   openHelp: () => call<void>("open_help"),
   sshLaunch: (requestId: string, address: string) =>
     call<SshLaunchPlan>("ssh_launch", { requestId, address }),
+  sshPrepare: (requestId: string, address: string) =>
+    call<SshPreparePlan>("ssh_prepare", { requestId, address }),
   quitApp: () => call<void>("quit_app"),
   getServiceConfig: () => call<ServiceConfig>("get_service_config"),
   saveServiceConfig: (apiUrl: string) => call<void>("save_service_config", { apiUrl }),

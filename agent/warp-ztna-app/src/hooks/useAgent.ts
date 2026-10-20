@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { writeText as writeTauriClipboard } from "@tauri-apps/plugin-clipboard-manager";
 import {
   addressKey,
   collectRows,
@@ -33,6 +34,22 @@ import type { UiConn } from "../types/ui";
 const CONNECT_BURST_MS = [1_500, 4_000, 8_000];
 
 const API_PROBE_RETRY_MS = 5_000;
+
+async function writeToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (isTauri()) {
+      await writeTauriClipboard(text);
+    } else if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function useAgent(
   tr: (key: string, vars?: Record<string, string>) => string,
@@ -625,7 +642,10 @@ export function useAgent(
 
   async function copyText(text: string) {
     if (!text) return;
-    await navigator.clipboard?.writeText(text).catch(() => undefined);
+    if (!(await writeToClipboard(text))) {
+      showToast(tr("toast.failed"));
+      return;
+    }
     setCopied(true);
     showToast(tr("toast.copied"));
     window.setTimeout(() => setCopied(false), 900);
@@ -643,8 +663,28 @@ export function useAgent(
     try {
       const plan = await native.sshLaunch(row.ssh.requestId, addressKey(row.address));
       if (plan.status === "launched") showToast(tr("toast.sshLaunched"));
-      else if (plan.status === "needs_config") showToast(tr("toast.sshNeedsConfig"));
       else setSshFallback(plan);
+    } catch (cause) {
+      showToast(
+        isNoLocalKeyError(cause)
+          ? tr("resources.sshNoKey")
+          : formatInvokeError(cause) || tr("toast.failed"),
+      );
+    } finally {
+      setSshBusyKey(null);
+    }
+  }
+
+  async function openSshCopy(row: ResourceRow) {
+    if (!row.ssh || sshBusyKey) return;
+    setSshBusyKey(row.key);
+    try {
+      const plan = await native.sshPrepare(row.ssh.requestId, addressKey(row.address));
+      if (!(await writeToClipboard(plan.command))) {
+        showToast(tr("toast.failed"));
+        return;
+      }
+      showToast(tr("toast.copied"));
     } catch (cause) {
       showToast(
         isNoLocalKeyError(cause)
@@ -695,6 +735,7 @@ export function useAgent(
     copyText,
     openDest,
     openSsh,
+    openSshCopy,
     sshBusyKey,
     sshFallback,
     closeSshFallback,
