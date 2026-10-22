@@ -31,6 +31,7 @@ pub const DEFAULT_AUDIT_POLL_INTERVAL_SECONDS: u64 = 900;
 /// Default interval for retrying approved access-request JIT applies.
 pub const DEFAULT_AUTHZ_APPLY_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_AUTHZ_AUTO_APPROVE_MAX_SECONDS: i64 = 604_800;
+pub const DEFAULT_MAX_ACCESS_REQUEST_DURATION_SECONDS: i64 = 31_536_000;
 pub const DEFAULT_SSH_HOST_CERT_TTL_SECONDS: i64 = 15_552_000;
 pub const DEFAULT_SSH_MANUAL_CERT_MAX_TTL_SECONDS: i64 = 86_400;
 
@@ -180,6 +181,7 @@ pub struct ApiConfig {
     pub ssh_ca_base_url: String,
     pub ssh_ca_request_timeout: Duration,
     pub ssh_manual_cert_max_ttl_seconds: i64,
+    pub max_access_request_duration_seconds: i64,
     pub client_pkg_base_url: String,
     pub client_pkg_latest_release_url: Option<String>,
 }
@@ -236,6 +238,7 @@ pub struct OrchConfig {
     pub authz_apply_interval: Duration,
     pub authz_auto_approve_enabled: bool,
     pub authz_auto_approve_max_seconds: i64,
+    pub max_access_request_duration_seconds: i64,
     pub ssh_host_cert_ttl_seconds: i64,
     pub ssh_manual_cert_max_ttl_seconds: i64,
     pub authz_reconcile_interval: Duration,
@@ -330,6 +333,10 @@ impl OrchConfig {
                 "WARP_AUTHZ_AUTO_APPROVE_MAX_SECONDS",
                 DEFAULT_AUTHZ_AUTO_APPROVE_MAX_SECONDS,
             )?,
+            max_access_request_duration_seconds: parse_positive_seconds(
+                "WARP_ACCESS_REQUEST_MAX_DURATION_SECONDS",
+                DEFAULT_MAX_ACCESS_REQUEST_DURATION_SECONDS,
+            )?,
             ssh_host_cert_ttl_seconds: parse_positive_seconds(
                 "WARP_SSH_HOST_CERT_TTL_SECONDS",
                 DEFAULT_SSH_HOST_CERT_TTL_SECONDS,
@@ -415,6 +422,10 @@ impl ApiConfig {
             ssh_manual_cert_max_ttl_seconds: parse_positive_seconds(
                 "WARP_SSH_MANUAL_CERT_MAX_TTL_SECONDS",
                 DEFAULT_SSH_MANUAL_CERT_MAX_TTL_SECONDS,
+            )?,
+            max_access_request_duration_seconds: parse_positive_seconds(
+                "WARP_ACCESS_REQUEST_MAX_DURATION_SECONDS",
+                DEFAULT_MAX_ACCESS_REQUEST_DURATION_SECONDS,
             )?,
             client_pkg_base_url: value(
                 "WARP_CLIENT_PKG_BASE_URL",
