@@ -5587,7 +5587,7 @@ dependencies = [
 
 [[package]]
 name = "warp-ztna-app"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
@@ -5617,7 +5617,7 @@ dependencies = [
 
 [[package]]
 name = "warp-ztna-cfg"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "secrecy",
  "serde",
@@ -5627,14 +5627,14 @@ dependencies = [
 
 [[package]]
 name = "warp-ztna-err"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "orion-error",
 ]
 
 [[package]]
 name = "warp-ztna-nbrpc"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "hyper-util",
  "prost",
