@@ -33,6 +33,10 @@ import type { UiConn } from "../types/ui";
 
 const CONNECT_BURST_MS = [1_500, 4_000, 8_000];
 
+const CONNECT_GRACE_MS = 15_000;
+
+const CONNECT_POLL_MS = 5_000;
+
 const API_PROBE_RETRY_MS = 5_000;
 
 async function writeToClipboard(text: string): Promise<boolean> {
@@ -114,10 +118,24 @@ export function useAgent(
   trRef.current = tr;
   const startSsoRef = useRef(startSso);
   startSsoRef.current = startSso;
+  const connectUntilRef = useRef(0);
+  const beginConnectWindow = useCallback(() => {
+    connectUntilRef.current = Date.now() + CONNECT_GRACE_MS;
+  }, []);
+  const endConnectWindow = useCallback(() => {
+    connectUntilRef.current = 0;
+  }, []);
 
   const applyStatus = useCallback((status: AgentStatus, signed: boolean, leadSecs = warningLeadSecs) => {
+    const connectPending = Date.now() < connectUntilRef.current;
+    const settled =
+      status.state === "connected" ||
+      status.state === "needs_login" ||
+      status.state === "error";
+    const idle = status.state === "disconnected" || status.state === "unknown";
+    if (settled || (idle && !connectPending)) endConnectWindow();
     setConnection((prev) => {
-      const next = nextConnection(prev, status, signed);
+      const next = nextConnection(prev, status, signed, connectPending);
       return prev === next ? prev : next;
     });
     if (status.hostname) {
@@ -146,7 +164,7 @@ export function useAgent(
     } else {
       setSessionExpiring((prev) => (prev ? false : prev));
     }
-  }, [warningLeadSecs]);
+  }, [warningLeadSecs, endConnectWindow]);
   const applyStatusRef = useRef(applyStatus);
   applyStatusRef.current = applyStatus;
 
@@ -225,9 +243,10 @@ export function useAgent(
       const status = await native.status();
       applyStatus(status, true);
     } catch {
+      endConnectWindow();
       setConnection("error");
     }
-  }, [applyStatus]);
+  }, [applyStatus, endConnectWindow]);
 
   const burstRef = useRef<number[]>([]);
   const clearConnectBurst = useCallback(() => {
@@ -243,6 +262,20 @@ export function useAgent(
     );
   }, [clearConnectBurst, refresh]);
   useEffect(() => clearConnectBurst, [clearConnectBurst]);
+
+  useEffect(() => {
+    if (!isTauri() || connection !== "connecting") return;
+    let cancelled = false;
+    const tick = async () => {
+      const status = await native.status().catch(() => null);
+      if (!cancelled && status) applyStatus(status, true);
+    };
+    const id = window.setInterval(() => void tick(), CONNECT_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [connection, applyStatus]);
 
   useEffect(() => {
     let alive = true;
@@ -289,6 +322,7 @@ export function useAgent(
         if (login.kind === "ready") {
           const autoUp = connectOnStartup;
           if (autoUp) {
+            if (status.state !== "connecting") beginConnectWindow();
             applyStatus({ ...status, state: "connecting" }, true);
             setMainGate("home");
             if (status.state !== "connecting") {
@@ -298,6 +332,7 @@ export function useAgent(
                 applyStatus(next, true);
                 await loadResources();
               } catch {
+                endConnectWindow();
                 if (alive && connectionRef.current !== "disconnected") setConnection("error");
               }
             }
@@ -551,6 +586,7 @@ export function useAgent(
         await native.waitSso(result.user_code);
         if (runId !== ssoRunRef.current) return;
       }
+      beginConnectWindow();
       setConnection("connecting");
       setMainGate("home");
       scheduleConnectBurst();
@@ -563,17 +599,20 @@ export function useAgent(
     } catch (cause) {
       if (runId !== ssoRunRef.current) return;
       if (isPendingApprovalError(cause)) {
+        endConnectWindow();
         setConnection("needs-login");
         setMainGate("welcome");
         setPendingApproval(true);
         return;
       }
       if (isPeerConflictError(cause)) {
+        endConnectWindow();
         setConnection("needs-login");
         setMainGate("welcome");
         setPeerConflict(true);
         return;
       }
+      endConnectWindow();
       const message = formatInvokeError(cause) || tr("toast.failed");
       showToast(message);
       if (notifyEnabledRef.current) void native.notify(tr("app.name"), message);
@@ -620,10 +659,12 @@ export function useAgent(
       } catch {
         /* still mark down */
       }
+      endConnectWindow();
       setConnection("disconnected");
       setSessionExpiring(false);
       return;
     }
+    beginConnectWindow();
     setConnection("connecting");
     scheduleConnectBurst();
     try {
@@ -632,6 +673,7 @@ export function useAgent(
       applyStatus(status, true);
       await loadResources();
     } catch (cause) {
+      endConnectWindow();
       if (connectionRef.current === "disconnected") return;
       setConnection("error");
       const message = formatInvokeError(cause) || tr("toast.failed");

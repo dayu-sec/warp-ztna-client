@@ -246,7 +246,9 @@ export function App() {
     ? tr("action.clickDisconnect")
     : agent.connection === "error"
       ? tr("action.retry")
-      : tr("action.clickConnect");
+      : agent.connecting
+        ? tr("status.connecting")
+        : tr("action.clickConnect");
   const welcomeNotice = agent.peerConflict
     ? tr("welcome.peerConflict")
     : agent.meshRejected

@@ -132,7 +132,9 @@ async fn agent_status(
     app: AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> CmdResult<StatusDto> {
-    if let Some(dto) = state.hub.cached_if_live().await {
+    if let Some(dto) = state.hub.cached_if_live().await
+        && dto.cacheable()
+    {
         log::debug!("agent_status: served from the status stream state={}", dto.state);
         return Ok(dto);
     }

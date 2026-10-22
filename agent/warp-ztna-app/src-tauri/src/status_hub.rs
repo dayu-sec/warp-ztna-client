@@ -51,6 +51,10 @@ impl StatusDto {
         }
     }
 
+    pub(crate) fn cacheable(&self) -> bool {
+        self.state != "connecting"
+    }
+
     pub(crate) fn unknown(stream: StreamHealth) -> Self {
         Self {
             state: "unknown",
@@ -366,6 +370,15 @@ mod tests {
 
         let escalated = hub.republish(StreamHealth::Reconnecting, Some("error")).await;
         assert_eq!(escalated.state, "error");
+    }
+
+    #[tokio::test]
+    async fn a_connecting_snapshot_is_not_cacheable() {
+        let hub = StatusHub::default();
+        let dto = hub.republish(StreamHealth::Live, Some("connecting")).await;
+        assert!(!dto.cacheable());
+        let dto = hub.republish(StreamHealth::Live, Some("disconnected")).await;
+        assert!(dto.cacheable());
     }
 
     #[tokio::test]

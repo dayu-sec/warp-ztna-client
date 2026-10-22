@@ -18,6 +18,7 @@ export function nextConnection(
   current: UiConn,
   frame: StatusFrame,
   signed = true,
+  connectPending = false,
 ): UiConn {
   if (frame.stream === "reconnecting") {
     if (!signed || current === "needs-login") return current;
@@ -26,6 +27,6 @@ export function nextConnection(
 
   const mapped = mapDaemonState(frame.state);
   if (!signed && mapped !== "needs-login" && mapped !== "connected") return "needs-login";
-  if (current === "connecting" && mapped === "disconnected") return current;
+  if (connectPending && current === "connecting" && mapped === "disconnected") return current;
   return mapped;
 }

@@ -25,8 +25,34 @@ test("live frames carry the daemon state", () => {
 });
 
 test("an in-flight connect is not flipped to disconnected", () => {
-  assert.equal(nextConnection("connecting", frame("disconnected")), "connecting");
-  assert.equal(nextConnection("connecting", frame("unknown")), "connecting");
+  assert.equal(nextConnection("connecting", frame("disconnected"), true, true), "connecting");
+  assert.equal(nextConnection("connecting", frame("unknown"), true, true), "connecting");
+});
+
+test("an idle frame unsticks connecting when no connect is pending", () => {
+  assert.equal(nextConnection("connecting", frame("disconnected"), true, false), "disconnected");
+  assert.equal(nextConnection("connecting", frame("unknown"), true, false), "disconnected");
+  assert.equal(nextConnection("connecting", frame(""), true, false), "disconnected");
+});
+
+test("the startup probe cannot pin the UI in connecting", () => {
+  let state = nextConnection("disconnected", frame("connecting"), true, false);
+  state = nextConnection(state, frame("disconnected"), true, false);
+  assert.equal(state, "disconnected");
+});
+
+test("connect grace does not bypass the signed guard", () => {
+  assert.equal(nextConnection("connecting", frame("disconnected"), false, true), "needs-login");
+});
+
+test("connect flags do not override terminal frames", () => {
+  assert.equal(nextConnection("connecting", frame("connected"), true, true), "connected");
+  assert.equal(nextConnection("connecting", frame("needs_login"), true, true), "needs-login");
+  assert.equal(nextConnection("connecting", frame("error"), true, true), "error");
+});
+
+test("a degraded stream still wins during a pending connect", () => {
+  assert.equal(nextConnection("connecting", frame("unknown", "reconnecting"), true, true), "reconnecting");
 });
 
 test("a degraded stream reads as reconnecting, not as the last known state", () => {
