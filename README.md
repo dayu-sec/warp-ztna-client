@@ -15,6 +15,7 @@ Warp ZTNA desktop client「零通」与 routing-peer 包的**构建与分发面*
 | `agent/warp-ztna` | 引擎归档与安装脚本（`install.sh` / `install.ps1`）、macOS `.pkg` 组装、离线 smoke 测试 |
 | `libs/warp-ztna-{cfg,err,nbrpc}` | 客户端依赖的公共 crate |
 | `deploy/client-pkg` | Release 资产组装脚本 |
+| `deploy/client-pkg/scripts` | 卸载 Warp / 清理旧引擎脚本（先 `--dry-run` / `-DryRun`） |
 
 ## 构建
 
@@ -29,6 +30,10 @@ Warp ZTNA desktop client「零通」与 routing-peer 包的**构建与分发面*
   六平台引擎归档、四个安装脚本与覆盖全部资产的 `checksums.txt`）。
 - 取件基址：`https://github.com/dayu-sec/warp-ztna-client/releases/download`，脚本按 `client-v<版本>/<资产名>` 取。
 - 校验：下载全部资产后在其所在目录执行 `sha256sum -c checksums.txt`。
+
+## 卸载
+
+完整卸载与旧引擎清理脚本在 `deploy/client-pkg/scripts/`。macOS / Linux 先加 `--dry-run`、Windows 先加 `-DryRun` 看将执行的动作；默认保留 state，`--purge` / `-Purge` 才删。各平台安装页有对应说明。
 
 本仓随包分发官方 NetBird 二进制；再分发遵循其归档内附带的 BSD-3-Clause 许可与版权声明。
 本仓不附许可文件，代码仅供查看与构建，未授予使用许可。

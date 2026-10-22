@@ -71,9 +71,9 @@ setup key 由管理台「路由入网」页签发（完整值只显示一次）�
 里的 peer 记录**。机器退场顺序：① 先在管理台摘掉 Router 引用 → ② 再删 Management 里的 peer →
 ③ 最后 `--uninstall`；顺序错会让 Network 丢路由。
 
-整机卸载（连同桌面 app 与用户侧残留）另有按 OS 的三份脚本：`docs/operations/scripts/` 下的
-`uninstall-warp-macos.sh` / `uninstall-warp-linux.sh` / `uninstall-warp-windows.ps1`（本仓私有目录；
-公开镜像仓不含 docs，那里请按门户帮助站的操作说明）；默认同样保留 state，`--purge` 才删。
+整机卸载（连同桌面 app 与用户侧残留）另有按 OS 的三份脚本：`deploy/client-pkg/scripts/` 下的
+`uninstall-warp-macos.sh` / `uninstall-warp-linux.sh` / `uninstall-warp-windows.ps1`（公开镜像仓可见；
+帮助站各 OS 安装页也有卸载说明）；默认同样保留 state，`--purge` 才删。
 
 排障备注：netbird 把服务参数缓存在 `<state>/service.json` 且跨卸载/重装存活，重装会静默恢复旧参数；
 本脚本每次显式传全量 flag，手工改动用 `netbird service reconfigure`。

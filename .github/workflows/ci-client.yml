@@ -100,4 +100,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck --shell=sh deploy/client-pkg/scripts/*.sh
       - run: sh agent/warp-ztna/tests/smoke.sh
+
+  client-scripts-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: powershell
+        run: |
+          $files = @(
+            "deploy/client-pkg/scripts/uninstall-warp-windows.ps1",
+            "deploy/client-pkg/scripts/uninstall-old-engine-windows.ps1"
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Host $_ }
+              exit 1
+            }
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file -Help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
