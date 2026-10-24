@@ -2171,6 +2171,9 @@ name = "ipnet"
 version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is-docker"
@@ -5591,6 +5594,7 @@ version = "0.1.20"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
+ "ipnet",
  "log",
  "objc2",
  "objc2-app-kit",

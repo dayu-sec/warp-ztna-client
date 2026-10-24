@@ -10,11 +10,12 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "零通",
         "width": 912,
         "height": 659,

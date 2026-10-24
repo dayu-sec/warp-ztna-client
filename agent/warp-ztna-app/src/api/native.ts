@@ -69,6 +69,13 @@ export type CurrentUser = {
   email?: string | null;
 };
 
+export type NativePrefs = {
+  lang: "zh" | "en";
+  notify: boolean;
+  sessionLeadMin: number;
+  trayTheme: "dark" | "light";
+};
+
 export type TrayMenuLabels = {
   open: string;
   request: string;
@@ -226,6 +233,9 @@ export const native = {
   quitApp: () => call<void>("quit_app"),
   getServiceConfig: () => call<ServiceConfig>("get_service_config"),
   saveServiceConfig: (apiUrl: string) => call<void>("save_service_config", { apiUrl }),
+  frontendReady: () => call<string | null>("frontend_ready"),
+  getNativePrefs: () => call<NativePrefs | null>("get_native_prefs"),
+  setNativePrefs: (prefs: NativePrefs) => call<void>("set_native_prefs", { prefs }),
   restartApp: () => call<void>("restart_app"),
   startDragging: async () => {
     if (!isTauri()) return;

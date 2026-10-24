@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import {
   UNGROUPED_SYSTEM,
   collectRows,
@@ -68,14 +68,14 @@ function sshHint(row: ResourceRow, tr: (key: string) => string, busy: boolean) {
   return tr("resources.ssh");
 }
 
-function ResourceRowView({
+const ResourceRowView = memo(function ResourceRowView({
   row,
   tr,
   onCopy,
   onOpenDest,
   onSsh,
   onSshCopy,
-  sshBusyKey,
+  busy,
 }: {
   row: ResourceRow;
   tr: (key: string) => string;
@@ -83,9 +83,9 @@ function ResourceRowView({
   onOpenDest: (address: string) => void;
   onSsh: (row: ResourceRow) => void;
   onSshCopy: (row: ResourceRow) => void;
-  sshBusyKey: string | null;
+  busy: boolean;
 }) {
-  const sshBusy = sshBusyKey === row.key;
+  const sshBusy = busy;
   return (
     <div className={`res-row${row.live ? " is-live" : ""}`}>
       <span
@@ -159,7 +159,7 @@ function ResourceRowView({
       </span>
     </div>
   );
-}
+});
 
 export function HomePage({
   connection,
@@ -466,7 +466,7 @@ export function HomePage({
                                     onOpenDest={onOpenDest}
                                     onSsh={onSsh}
                                     onSshCopy={onSshCopy}
-                                    sshBusyKey={sshBusyKey}
+                                    busy={sshBusyKey === row.key}
                                   />
                                 ))}
                               </div>
@@ -482,7 +482,7 @@ export function HomePage({
                             onOpenDest={onOpenDest}
                             onSsh={onSsh}
                             onSshCopy={onSshCopy}
-                            sshBusyKey={sshBusyKey}
+                            busy={sshBusyKey === row.key}
                           />
                         ))}
                       </div>
@@ -501,7 +501,7 @@ export function HomePage({
                     onOpenDest={onOpenDest}
                     onSsh={onSsh}
                     onSshCopy={onSshCopy}
-                    sshBusyKey={sshBusyKey}
+                    busy={sshBusyKey === row.key}
                   />
                 ))}
               </div>

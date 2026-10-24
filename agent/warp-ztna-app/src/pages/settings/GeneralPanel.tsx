@@ -26,7 +26,7 @@ export function GeneralPanel({
   tr: (key: string) => string;
   onLang: (lang: Lang) => void;
   onTheme: (theme: ThemePref) => void;
-  onPref: (key: "notify" | "startup" | "launch", value: boolean, storageKey: string) => void;
+  onPref: (key: "notify" | "launch", value: boolean, storageKey: string) => void;
   onSessionLead: (minutes: number) => void;
   onAssetRefresh: (minutes: number) => void;
   onManageProfiles: () => void;
@@ -131,17 +131,6 @@ export function GeneralPanel({
               type="checkbox"
               checked={prefs.notify}
               onChange={(e) => onPref("notify", e.target.checked, "warp-ztna-opt-notify")}
-            />
-            <span className="switch-ui" />
-          </span>
-        </label>
-        <label className="row">
-          <span>{tr("settings.connectOnStartup")}</span>
-          <span className="switch">
-            <input
-              type="checkbox"
-              checked={prefs.startup}
-              onChange={(e) => onPref("startup", e.target.checked, "warp-ztna-opt-startup")}
             />
             <span className="switch-ui" />
           </span>

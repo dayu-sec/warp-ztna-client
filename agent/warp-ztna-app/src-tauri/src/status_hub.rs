@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use warp_ztna_nbrpc::prelude::{MeshAgentRpc, ReconnectBackoff, StatusFrame, StatusView};
 
 use crate::state_name;
@@ -104,19 +104,36 @@ impl RouteCache {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct StatusHub {
     latest: Mutex<Option<StatusDto>>,
     routes: Mutex<RouteCache>,
+    connected_tx: watch::Sender<bool>,
+}
+
+impl Default for StatusHub {
+    fn default() -> Self {
+        let (connected_tx, _) = watch::channel(false);
+        Self { latest: Mutex::new(None), routes: Mutex::new(RouteCache::default()), connected_tx }
+    }
 }
 
 impl StatusHub {
     pub(crate) async fn publish(&self, dto: StatusDto) {
+        let connected = dto.state == "connected";
         *self.latest.lock().await = Some(dto);
+        let _ = self.connected_tx.send(connected);
+    }
+
+    pub(crate) fn subscribe_connected(&self) -> watch::Receiver<bool> {
+        self.connected_tx.subscribe()
     }
 
     pub(crate) async fn cached_if_live(&self) -> Option<StatusDto> {
         self.latest.lock().await.clone().filter(|dto| dto.stream == StreamHealth::Live)
+    }
+
+    pub(crate) async fn latest(&self) -> Option<StatusDto> {
+        self.latest.lock().await.clone()
     }
 
     pub(crate) async fn stream_health(&self) -> StreamHealth {
@@ -134,7 +151,9 @@ impl StatusHub {
         if let Some(state) = state {
             dto.state = state;
         }
-        dto.clone()
+        let dto = dto.clone();
+        let _ = self.connected_tx.send(dto.state == "connected");
+        dto
     }
 
     async fn routes_for(

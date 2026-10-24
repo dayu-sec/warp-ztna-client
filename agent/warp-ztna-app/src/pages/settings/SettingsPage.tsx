@@ -49,7 +49,7 @@ export function SettingsPage({
   onTab: (tab: SettingsTab) => void;
   onLang: (lang: Lang) => void;
   onTheme: (theme: ThemePref) => void;
-  onPref: (key: "notify" | "startup" | "launch", value: boolean, storageKey: string) => void;
+  onPref: (key: "notify" | "launch", value: boolean, storageKey: string) => void;
   onSessionLead: (minutes: number) => void;
   onAssetRefresh: (minutes: number) => void;
   onNewProfile: () => void;

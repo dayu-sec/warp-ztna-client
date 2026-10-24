@@ -15,6 +15,7 @@ rust-version = "1.95"
 
 
 [workspace.dependencies]
+ipnet = { version = "2.12", features = ["serde"] }
 orion-error = { version = "0.8.1", default-features = false, features = ["derive"] }
 prost = "0.13"
 prost-types = "0.13"

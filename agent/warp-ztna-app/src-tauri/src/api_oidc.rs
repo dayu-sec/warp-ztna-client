@@ -19,7 +19,7 @@ use warp_ztna_err::prelude::*;
 
 const REDIRECT_PORT: u16 = 37_123;
 const CALLBACK_TIMEOUT: Duration = Duration::from_mins(3);
-const ISSUER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const ISSUER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_OIDC_ISSUER: &str = "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna";
 
@@ -134,6 +134,7 @@ pub struct ApiOidc {
     config: Arc<OidcConfig>,
     cache: Arc<Mutex<Option<CachedToken>>>,
     acquire_lock: Arc<Mutex<()>>,
+    http: reqwest::Client,
 }
 
 impl ApiOidc {
@@ -142,6 +143,7 @@ impl ApiOidc {
             config: Arc::new(config),
             cache: Arc::new(Mutex::new(None)),
             acquire_lock: Arc::new(Mutex::new(())),
+            http: reqwest::Client::new(),
         }
     }
 
@@ -156,7 +158,12 @@ impl ApiOidc {
     pub fn with_issuer(&self, issuer: &str) -> Self {
         let mut config = (*self.config).clone();
         config.issuer = normalize_issuer(issuer);
-        Self::new(config)
+        Self {
+            config: Arc::new(config),
+            cache: Arc::new(Mutex::new(None)),
+            acquire_lock: Arc::new(Mutex::new(())),
+            http: self.http.clone(),
+        }
     }
 
     pub async fn access_token(&self) -> Result<String> {
@@ -185,6 +192,27 @@ impl ApiOidc {
         let access = tokens.access_token.clone();
         self.cache_tokens(tokens).await;
         Ok(access)
+    }
+
+    pub(crate) async fn try_access_token(&self) -> Option<String> {
+        if !self.is_configured() {
+            return None;
+        }
+        let Ok(_guard) = self.acquire_lock.try_lock() else {
+            return None;
+        };
+        if let Some(token) = self.cached_access_token().await {
+            return Some(token);
+        }
+        if let Some(refresh_token) = self.cached_refresh_token().await {
+            if let Ok(tokens) = self.exchange_refresh(&refresh_token).await {
+                let access = tokens.access_token.clone();
+                self.cache_tokens(tokens).await;
+                return Some(access);
+            }
+            *self.cache.lock().await = None;
+        }
+        None
     }
 
     pub async fn clear(&self) -> Result<()> {
@@ -219,7 +247,7 @@ impl ApiOidc {
 
     async fn ensure_issuer_reachable(&self) -> Result<()> {
         log::debug!("api_oidc: probing issuer {}", self.config.issuer);
-        reqwest::Client::new()
+        self.http
             .get(self.config.discovery_url())
             .timeout(ISSUER_PROBE_TIMEOUT)
             .send()
@@ -274,7 +302,8 @@ impl ApiOidc {
     }
 
     async fn revoke_refresh_token(&self, refresh_token: &str) {
-        let result = reqwest::Client::new()
+        let result = self
+            .http
             .post(self.config.revocation_url())
             .form(&[
                 ("client_id", self.config.client_id.as_str()),
@@ -299,7 +328,8 @@ impl ApiOidc {
     }
 
     async fn token_request(&self, form: &[(&str, &str)]) -> Result<TokenResponse> {
-        let response = reqwest::Client::new()
+        let response = self
+            .http
             .post(self.config.token_url())
             .form(form)
             .timeout(TOKEN_TIMEOUT)

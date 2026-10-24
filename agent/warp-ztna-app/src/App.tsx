@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { collectRows } from "./api/access";
+import { collectRows, type ResourceRow } from "./api/access";
 import { isTauri, native } from "./api/native";
 import { Titlebar } from "./components/Titlebar";
 import { ConfirmSwitch } from "./components/overlays/ConfirmSwitch";
@@ -64,7 +64,6 @@ export function App() {
     profiles.loadProfiles,
     prefs.sessionWarningLeadMin,
     prefs.assetRefreshMin,
-    prefs.startup,
     prefs.notify,
   );
   const platform = detectPlatform();
@@ -73,6 +72,16 @@ export function App() {
   const profilesRef = useRef(profiles);
   agentRef.current = agent;
   profilesRef.current = profiles;
+
+  const toggleConnect = useCallback(() => void agentRef.current.toggleConnect(), []);
+  const copyText = useCallback((text: string) => void agentRef.current.copyText(text), []);
+  const openDest = useCallback((address: string) => void agentRef.current.openDest(address), []);
+  const openSsh = useCallback((row: ResourceRow) => void agentRef.current.openSsh(row), []);
+  const openSshCopy = useCallback((row: ResourceRow) => void agentRef.current.openSshCopy(row), []);
+  const requestAccess = useCallback(() => {
+    void (isTauri() ? native.openPortal("request") : undefined);
+  }, []);
+  const refreshAssets = useCallback(() => void agentRef.current.loadResources(true), []);
 
   useEffect(() => {
     let disposed = false;
@@ -112,6 +121,23 @@ export function App() {
     return () => {
       disposed = true;
       stop?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    void native
+      .frontendReady()
+      .then((action) => {
+        if (!disposed && action === "settings") {
+          setSurface("settings");
+          setSettingsTab("general");
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
     };
   }, []);
 
@@ -335,13 +361,13 @@ export function App() {
                 resourcesBusy={agent.resourcesBusy}
                 sshBusyKey={agent.sshBusyKey}
                 tr={tr}
-                onToggleConnect={() => void agent.toggleConnect()}
-                onCopy={(text) => void agent.copyText(text)}
-                onOpenDest={(address) => void agent.openDest(address)}
-                onSsh={(row) => void agent.openSsh(row)}
-                onSshCopy={(row) => void agent.openSshCopy(row)}
-                onRequestAccess={() => void (isTauri() ? native.openPortal("request") : undefined)}
-                onRefreshAssets={() => void agent.loadResources(true)}
+                onToggleConnect={toggleConnect}
+                onCopy={copyText}
+                onOpenDest={openDest}
+                onSsh={openSsh}
+                onSshCopy={openSshCopy}
+                onRequestAccess={requestAccess}
+                onRefreshAssets={refreshAssets}
               />
             )}
           </div>

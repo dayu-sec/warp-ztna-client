@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -14,12 +15,18 @@ use time::macros::format_description;
 use tokio::sync::Mutex;
 
 mod api_oidc;
+mod coverage;
 mod error;
+mod i18n;
+mod liveness;
 #[cfg(target_os = "macos")]
 mod macos_chrome;
 #[cfg(target_os = "macos")]
 mod macos_tray;
+mod notify;
+mod prefs;
 mod process;
+mod resources;
 mod service_config;
 mod ssh_login;
 mod sso_tab;
@@ -42,6 +49,10 @@ const API_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const CLIENT_CONFIG_TIMEOUT: Duration = Duration::from_secs(3);
 
+const PROBE_OK_INTERVAL: Duration = Duration::from_mins(5);
+
+const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
 #[derive(Clone)]
 struct PlatformService {
     portal_url: String,
@@ -53,11 +64,34 @@ struct DesktopState {
     daemon_addr: String,
     api_base_url: String,
     api_token: Option<String>,
+    http: reqwest::Client,
     platform: Arc<RwLock<PlatformService>>,
     user_email: Arc<Mutex<Option<String>>>,
     token_email: Arc<Mutex<Option<String>>>,
     hub: Arc<StatusHub>,
+    tray: Arc<std::sync::Mutex<TrayModel>>,
+    liveness: Arc<std::sync::Mutex<liveness::LivenessState>>,
+    dismissed_expiry: Arc<std::sync::Mutex<Option<i64>>>,
+    window_generation: Arc<AtomicU64>,
+    window_geometry: Arc<std::sync::Mutex<Option<WindowGeometry>>>,
+    sso_busy: Arc<AtomicUsize>,
+    pending_action: Arc<std::sync::Mutex<Option<String>>>,
     task: Arc<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+}
+
+struct SsoBusyGuard(Arc<AtomicUsize>);
+
+impl SsoBusyGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for SsoBusyGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl DesktopState {
@@ -292,6 +326,7 @@ async fn wait_extend_sso(
     user_code: String,
 ) -> CmdResult<StatusDto> {
     log::debug!("wait_extend_sso: waiting for browser approval");
+    let _busy = SsoBusyGuard::new(Arc::clone(&state.sso_busy));
     let mut client = connect_client(&state).await?;
     lift_mesh(client.wait_extend_session(&device_code, &user_code).await, "wait extend session")?;
     sso_tab::close_netbird_redirect_tabs();
@@ -303,6 +338,13 @@ async fn wait_extend_sso(
 #[tauri::command]
 async fn dismiss_session_warning(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::debug!("dismiss_session_warning: dismissing daemon warning");
+    if let Some(expires) = state.hub.latest().await.and_then(|status| status.session_expires_at) {
+        let mut dismissed = match state.dismissed_expiry.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *dismissed = Some(expires);
+    }
     let mut client = connect_client(&state).await?;
     let _ = client.dismiss_session_warning().await;
     Ok(())
@@ -315,6 +357,7 @@ async fn wait_sso(
     user_code: String,
 ) -> CmdResult<StatusDto> {
     log::info!("wait_sso: waiting for browser sign-in");
+    let _busy = SsoBusyGuard::new(Arc::clone(&state.sso_busy));
     let mut client = connect_client(&state).await?;
     match client.wait_sso_login(&user_code, None).await {
         Ok(email) => {
@@ -453,13 +496,14 @@ fn address_key(value: &str) -> String {
 }
 
 async fn api_get(
+    client: &reqwest::Client,
     base: &str,
     path: &str,
     token: &str,
     context: &'static str,
 ) -> CmdResult<serde_json::Value> {
     let url = format!("{}/{}", base.trim_end_matches('/'), path.trim_start_matches('/'));
-    let response = reqwest::Client::new()
+    let response = client
         .get(url)
         .bearer_auth(token)
         .timeout(API_TIMEOUT)
@@ -529,9 +573,9 @@ fn apply_client_config(platform: &mut PlatformService, response: &ClientConfigRe
 async fn fetch_client_config(base: &str, state: &DesktopState) -> Result<(), String> {
     let url = format!("{base}/api/v1/client-config");
     let response =
-        reqwest::Client::new().get(&url).timeout(CLIENT_CONFIG_TIMEOUT).send().await.map_err(
-            |cause| root_message(&because(Reason::External, "fetch client config", cause)),
-        )?;
+        state.http.get(&url).timeout(CLIENT_CONFIG_TIMEOUT).send().await.map_err(|cause| {
+            root_message(&because(Reason::External, "fetch client config", cause))
+        })?;
     let status = response.status().as_u16();
     match classify_client_config_status(status) {
         ClientConfigStatus::Present => {}
@@ -590,64 +634,93 @@ fn classify_probe_response(code: u16) -> (&'static str, Option<String>) {
     }
 }
 
-#[tauri::command]
-async fn api_probe(state: tauri::State<'_, DesktopState>) -> CmdResult<ApiProbeDto> {
+async fn probe_api(state: &DesktopState) -> ApiProbeDto {
     let base = state.api_base_url.trim_end_matches('/').to_owned();
     let url = format!("{base}/health/ready");
     log::info!("api_probe: probing {url}");
-    let status = match reqwest::Client::new().get(&url).timeout(API_PROBE_TIMEOUT).send().await {
+    let status = match state.http.get(&url).timeout(API_PROBE_TIMEOUT).send().await {
         Ok(response) => response.status().as_u16(),
         Err(cause) => {
             let error = because(Reason::External, "probe platform API", cause);
             let outcome = ApiProbeDto::unreachable(root_message(&error));
             log::info!("api_probe: status={} detail={:?}", outcome.status, outcome.detail);
-            return Ok(outcome);
+            return outcome;
         }
     };
     if !(200..300).contains(&status) {
         let outcome = ApiProbeDto::from_http_status(status);
         log::info!("api_probe: status={} detail={:?}", outcome.status, outcome.detail);
-        return Ok(outcome);
+        return outcome;
     }
-    if let Err(detail) = fetch_client_config(&base, &state).await {
+    if let Err(detail) = fetch_client_config(&base, state).await {
         log::warn!("api_probe: client config unavailable: {detail}");
-        return Ok(ApiProbeDto::unreachable(detail));
+        return ApiProbeDto::unreachable(detail);
     }
     let platform = state.platform();
     if state.api_token.is_none() && !platform.api_auth.is_configured() {
         log::warn!("api_probe: no API token source configured (WARP_API_TOKEN or OIDC)");
-        return Ok(ApiProbeDto::unconfigured());
+        return ApiProbeDto::unconfigured();
     }
     let outcome = ApiProbeDto::from_http_status(status);
     log::info!("api_probe: status={} detail={:?}", outcome.status, outcome.detail);
-    Ok(outcome)
+    outcome
 }
 
 #[tauri::command]
-async fn my_access_resources(
+#[allow(clippy::needless_pass_by_value)]
+async fn api_probe(
+    app: AppHandle,
     state: tauri::State<'_, DesktopState>,
-) -> CmdResult<serde_json::Value> {
-    log::info!("my_access_resources: loading granted resources");
-    let empty_catalog = serde_json::json!({ "groups": [], "addresses": [] });
-    let Some((base, token)) = api_context(&state, "my_access_resources").await? else {
-        return Ok(
-            serde_json::json!({ "requests": [], "catalog": empty_catalog, "group_grants": [] }),
-        );
+) -> CmdResult<ApiProbeDto> {
+    let outcome = probe_api(state.inner()).await;
+    update_tray_api(&app, outcome.status == "ok");
+    Ok(outcome)
+}
+
+fn update_tray_api(app: &AppHandle, ok: bool) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
     };
+    let changed = {
+        let mut model = match state.tray.lock() {
+            Ok(model) => model,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if model.api_ok == ok {
+            false
+        } else {
+            model.api_ok = ok;
+            true
+        }
+    };
+    if changed {
+        rebuild_tray(app);
+    }
+}
+
+#[tauri::command]
+async fn fetch_access_payload(
+    state: &DesktopState,
+    base: &str,
+    token: &str,
+) -> CmdResult<serde_json::Value> {
+    let empty_catalog = serde_json::json!({ "groups": [], "addresses": [] });
     let (authorized, approved, grants) = tokio::join!(
         api_get(
-            &base,
+            &state.http,
+            base,
             "api/v1/access-requests?status=authorized&limit=200&all=false",
-            &token,
+            token,
             "fetch authorized requests"
         ),
         api_get(
-            &base,
+            &state.http,
+            base,
             "api/v1/access-requests?status=approved&limit=200&all=false",
-            &token,
+            token,
             "fetch approved requests"
         ),
-        api_get(&base, "api/v1/me/group-grants", &token, "fetch group grants"),
+        api_get(&state.http, base, "api/v1/me/group-grants", token, "fetch group grants"),
     );
     let mut requests = Vec::new();
     for payload in [authorized?, approved?] {
@@ -656,9 +729,10 @@ async fn my_access_resources(
         }
     }
     let catalog = match api_get(
-        &base,
+        &state.http,
+        base,
         "api/v1/assets/access-request-catalog",
-        &token,
+        token,
         "fetch access request catalog",
     )
     .await
@@ -688,12 +762,82 @@ async fn my_access_resources(
     )
 }
 
+fn native_lang(app: &AppHandle) -> String {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .as_deref()
+        .and_then(prefs::load)
+        .map_or_else(|| "zh".to_owned(), |prefs| prefs.lang)
+}
+
+fn update_tray_resources(app: &AppHandle, payload: &serde_json::Value, lang: &str) {
+    let rows = resources::rows_from_payload(payload, lang);
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let mut model = match state.tray.lock() {
+            Ok(model) => model,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        model.resources = rows.rows;
+        model.more = rows.more;
+    }
+    rebuild_tray(app);
+    let handle = app.clone();
+    let liveness_rows = rows.liveness;
+    tauri::async_runtime::spawn(async move {
+        liveness::update_rows(&handle, liveness_rows).await;
+    });
+}
+
+async fn resource_token(state: &DesktopState) -> Option<String> {
+    if let Some(token) = &state.api_token {
+        return Some(token.clone());
+    }
+    let platform = state.platform();
+    if !platform.api_auth.is_configured() {
+        return None;
+    }
+    platform.api_auth.try_access_token().await
+}
+
+async fn refresh_headless_resources(app: &AppHandle) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let Some(token) = resource_token(state.inner()).await else {
+        return;
+    };
+    let base = state.api_base_url.clone();
+    match fetch_access_payload(state.inner(), &base, &token).await {
+        Ok(payload) => update_tray_resources(app, &payload, &native_lang(app)),
+        Err(error) => log::warn!("headless resources: {}", error.message),
+    }
+}
+
+#[tauri::command]
+async fn my_access_resources(
+    app: AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> CmdResult<serde_json::Value> {
+    log::info!("my_access_resources: loading granted resources");
+    let empty_catalog = serde_json::json!({ "groups": [], "addresses": [] });
+    let Some((base, token)) = api_context(&state, "my_access_resources").await? else {
+        return Ok(
+            serde_json::json!({ "requests": [], "catalog": empty_catalog, "group_grants": [] }),
+        );
+    };
+    let payload = fetch_access_payload(state.inner(), &base, &token).await?;
+    update_tray_resources(&app, &payload, &native_lang(&app));
+    Ok(payload)
+}
+
 async fn fetch_mesh_status(state: &DesktopState) -> CmdResult<serde_json::Value> {
     let Some((base, token)) = api_context(state, "my_mesh_status").await? else {
         return Ok(serde_json::json!({ "status": "unknown" }));
     };
     let url = format!("{}/api/v1/me/mesh-status", base.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let response = state
+        .http
         .get(url)
         .bearer_auth(token)
         .timeout(API_TIMEOUT)
@@ -762,6 +906,7 @@ async fn current_user(state: tauri::State<'_, DesktopState>) -> CmdResult<Curren
 #[tauri::command]
 async fn acquire_api_session(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::info!("acquire_api_session: ensuring API token");
+    let _busy = SsoBusyGuard::new(Arc::clone(&state.sso_busy));
     let platform = state.platform();
     if state.api_token.is_some() || !platform.api_auth.is_configured() {
         return Ok(());
@@ -829,9 +974,16 @@ async fn prepare_ssh_launch(
         ));
     };
     let certificates =
-        api_get(&base, "api/v1/me/ssh-certificates", &token, "fetch ssh certificates").await?;
-    let config =
-        api_get(&base, "api/v1/me/ssh-client-config", &token, "fetch ssh client config").await?;
+        api_get(&state.http, &base, "api/v1/me/ssh-certificates", &token, "fetch ssh certificates")
+            .await?;
+    let config = api_get(
+        &state.http,
+        &base,
+        "api/v1/me/ssh-client-config",
+        &token,
+        "fetch ssh client config",
+    )
+    .await?;
     let wanted = address_key(&address);
     let host = config.get("hosts").and_then(serde_json::Value::as_array).and_then(|hosts| {
         hosts.iter().find(|host| {
@@ -952,6 +1104,7 @@ async fn prepare_ssh_launch(
             ));
         };
         api_get(
+            &state.http,
             &base,
             &format!("api/v1/me/ssh-certificates/{id}/download"),
             &token,
@@ -1077,7 +1230,7 @@ fn apply_win11_corners(hwnd: isize) {
 async fn quit_app(app: tauri::AppHandle, state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
     log::info!("quit: requested");
     stop_status_stream(&state);
-    let _ = state.platform().api_auth.clear().await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), state.platform().api_auth.clear()).await;
     if let Ok(mut client) = connect_client(&state).await {
         let _ = client.down().await;
     }
@@ -1121,15 +1274,148 @@ fn log_file_name(file: &str) -> &str {
 
 const TRAY_ID: &str = "main";
 
-fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        #[cfg(target_os = "macos")]
-        macos_chrome::activate();
-        emit_window_visibility(&window, true);
+const CLOSE_DESTROY_GRACE: Duration = Duration::from_mins(2);
+
+const REOPEN_MARKER: &str = "reopen";
+
+fn save_window_geometry(app: &AppHandle, window: &tauri::Window) {
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let mut geometry = match state.window_geometry.lock() {
+            Ok(geometry) => geometry,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *geometry = Some(WindowGeometry {
+            width: size.width,
+            height: size.height,
+            x: position.x,
+            y: position.y,
+        });
     }
+}
+
+fn apply_window_geometry(window: &tauri::WebviewWindow, geometry: WindowGeometry) {
+    let on_screen = window.available_monitors().unwrap_or_default().iter().any(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        geometry.x >= position.x
+            && geometry.y >= position.y
+            && geometry.x < position.x + size.width.cast_signed()
+            && geometry.y < position.y + size.height.cast_signed()
+    });
+    if on_screen {
+        let _ = window.set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y));
+    }
+    let _ = window.set_size(tauri::PhysicalSize::new(geometry.width, geometry.height));
+}
+
+fn cancel_window_destroy(app: &AppHandle) {
+    if let Some(state) = app.try_state::<DesktopState>() {
+        state.window_generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn ensure_main_window(app: &AppHandle, show: bool) -> Option<tauri::WebviewWindow> {
+    if let Some(window) = app.get_webview_window("main") {
+        if show {
+            let _ = window.show();
+        }
+        return Some(window);
+    }
+    let config = app.config().app.windows.iter().find(|window| window.label == "main")?.clone();
+    let window = match tauri::WebviewWindowBuilder::from_config(app, &config) {
+        Ok(builder) => match builder.build() {
+            Ok(window) => window,
+            Err(error) => {
+                log::warn!("window: build failed: {error}");
+                return None;
+            }
+        },
+        Err(error) => {
+            log::warn!("window: builder failed: {error}");
+            return None;
+        }
+    };
+    #[cfg(target_os = "macos")]
+    macos_chrome::apply(&window);
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        apply_win11_corners(hwnd.0 as isize);
+    }
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let geometry = match state.window_geometry.lock() {
+            Ok(geometry) => *geometry,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+        if let Some(geometry) = geometry {
+            apply_window_geometry(&window, geometry);
+        }
+    }
+    if show {
+        let _ = window.show();
+    }
+    Some(window)
+}
+
+fn show_main_window(app: &AppHandle) {
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || show_main_window_now(&handle)) {
+        log::warn!("window: show dispatch failed: {error}");
+    }
+}
+
+fn show_main_window_now(app: &AppHandle) {
+    cancel_window_destroy(app);
+    let Some(window) = ensure_main_window(app, true) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+    #[cfg(target_os = "macos")]
+    macos_chrome::activate();
+    emit_window_visibility(&window, true);
+}
+
+fn schedule_window_destroy(app: &AppHandle) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let generation = state.window_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(CLOSE_DESTROY_GRACE).await;
+        loop {
+            if let Some(state) = handle.try_state::<DesktopState>()
+                && state.window_generation.load(Ordering::SeqCst) != generation
+            {
+                return;
+            }
+            let busy = handle
+                .try_state::<DesktopState>()
+                .is_some_and(|state| state.sso_busy.load(Ordering::SeqCst) > 0);
+            if busy {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+            break;
+        }
+        let Some(window) = handle.get_webview_window("main") else {
+            return;
+        };
+        if window.is_visible().unwrap_or(false) {
+            return;
+        }
+        log::info!("window: destroying hidden window");
+        if let Err(error) = window.destroy() {
+            log::warn!("window: destroy failed: {error}");
+        }
+    });
 }
 
 fn focus_visible_main_window(app: &AppHandle) {
@@ -1149,9 +1435,29 @@ fn emit_window_visibility(window: &impl Emitter<tauri::Wry>, visible: bool) {
 }
 
 fn tray_open_settings(app: &AppHandle) {
+    if app.get_webview_window("main").is_some() {
+        show_main_window(app);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.emit("tray-open-settings", ());
+        }
+        return;
+    }
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let mut action = match state.pending_action.lock() {
+            Ok(action) => action,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *action = Some("settings".to_owned());
+    }
     show_main_window(app);
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.emit("tray-open-settings", ());
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn frontend_ready(state: tauri::State<'_, DesktopState>) -> Option<String> {
+    match state.pending_action.lock() {
+        Ok(mut action) => action.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
     }
 }
 
@@ -1160,10 +1466,69 @@ fn tray_connect(app: &AppHandle) {
         return;
     };
     let daemon_addr = state.daemon_addr.clone();
+    let handle = app.clone();
     log::info!("tray: connect requested");
     tauri::async_runtime::spawn(async move {
-        if let Ok(mut client) = MeshAgentRpc::connect_str(&daemon_addr).await {
-            let _ = client.up().await;
+        let api_ok = match handle.try_state::<DesktopState>() {
+            Some(state) => {
+                let cached = match state.tray.lock() {
+                    Ok(model) => model.api_ok,
+                    Err(poisoned) => poisoned.into_inner().api_ok,
+                };
+                if cached {
+                    true
+                } else {
+                    let ok = probe_api(state.inner()).await.status == "ok";
+                    if ok {
+                        let mut model = match state.tray.lock() {
+                            Ok(model) => model,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        model.api_ok = true;
+                        drop(model);
+                        rebuild_tray(&handle);
+                    }
+                    ok
+                }
+            }
+            None => return,
+        };
+        if !api_ok {
+            rebuild_tray(&handle);
+            return;
+        }
+        let Ok(mut client) = MeshAgentRpc::connect_str(&daemon_addr).await else {
+            return;
+        };
+        match login_outcome(&mut client).await {
+            Ok(SsoStartDto::Ready) => {}
+            Ok(SsoStartDto::SsoRequired { .. }) => {
+                log::info!("tray: connect requires sso; showing login window");
+                show_main_window(&handle);
+                return;
+            }
+            Err(error) => {
+                log::warn!("tray: login probe failed: {}", error.message);
+                return;
+            }
+        }
+        let Some(state) = handle.try_state::<DesktopState>() else {
+            return;
+        };
+        let platform = state.platform();
+        if state.api_token.is_none()
+            && platform.api_auth.is_configured()
+            && let Err(error) = platform.api_auth.access_token().await
+        {
+            log::warn!("tray: platform oidc failed: {error}");
+            show_main_window(&handle);
+            return;
+        }
+        if let Err(error) = client.up().await {
+            log::warn!("tray: connect failed: {error}");
+        }
+        if handle.get_webview_window("main").is_none() {
+            refresh_headless_resources(&handle).await;
         }
     });
 }
@@ -1187,7 +1552,8 @@ fn tray_quit(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Some(state) = handle.try_state::<DesktopState>() {
             stop_status_stream(&state);
-            let _ = state.platform().api_auth.clear().await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), state.platform().api_auth.clear())
+                .await;
             if let Ok(mut client) = MeshAgentRpc::connect_str(&state.daemon_addr).await {
                 let _ = client.down().await;
             }
@@ -1220,6 +1586,7 @@ fn handle_tray_menu_event(app: &AppHandle, event: &MenuEvent) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn tray_icon_bytes(theme: &str) -> &'static [u8] {
     if theme == "light" {
         include_bytes!("../../src/assets/icon-black.png")
@@ -1228,12 +1595,27 @@ fn tray_icon_bytes(theme: &str) -> &'static [u8] {
     }
 }
 
+fn initial_tray_icon_bytes(theme: &str) -> &'static [u8] {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = theme;
+        include_bytes!("../../src/assets/icon-template.png")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        tray_icon_bytes(theme)
+    }
+}
+
 fn set_tray_icon(app: &AppHandle, theme: &str) -> CmdResult<()> {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return Ok(());
     };
-    let icon = Image::from_bytes(tray_icon_bytes(theme)).or_err(Reason::Internal, "tray icon")?;
+    let icon =
+        Image::from_bytes(initial_tray_icon_bytes(theme)).or_err(Reason::Internal, "tray icon")?;
     tray.set_icon(Some(icon)).or_err(Reason::Internal, "set tray icon")?;
+    #[cfg(target_os = "macos")]
+    tray.set_icon_as_template(true).or_err(Reason::Internal, "set tray template")?;
     Ok(())
 }
 
@@ -1243,7 +1625,7 @@ fn set_tray_icon_theme(app: AppHandle, theme: String) -> CmdResult<()> {
     set_tray_icon(&app, &theme)
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct TrayMenuLabels {
     open: String,
     request: String,
@@ -1255,11 +1637,81 @@ struct TrayMenuLabels {
     more: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct TrayResource {
     label: String,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     status: String,
+}
+
+struct TrayModel {
+    labels: TrayMenuLabels,
+    resources: Vec<TrayResource>,
+    more: bool,
+    connected: bool,
+    api_ok: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WindowGeometry {
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+}
+
+impl TrayModel {
+    fn new(lang: &str) -> Self {
+        let labels = i18n::tray_labels(lang);
+        Self {
+            labels: TrayMenuLabels {
+                open: labels.open,
+                request: labels.request,
+                resources: labels.resources,
+                connect: labels.connect,
+                disconnect: labels.disconnect,
+                settings: labels.settings,
+                quit: labels.quit,
+                more: labels.more,
+            },
+            resources: Vec::new(),
+            more: false,
+            connected: false,
+            api_ok: true,
+        }
+    }
+}
+
+fn rebuild_tray(app: &AppHandle) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let (labels, resources, more, connected, api_ok) = {
+        let model = match state.tray.lock() {
+            Ok(model) => model,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (model.labels.clone(), model.resources.clone(), model.more, model.connected, model.api_ok)
+    };
+    let handle = app.clone();
+    let result = app.run_on_main_thread(move || {
+        let Some(tray) = handle.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        match tray_menu(&handle, &labels, connected, &resources, more, !api_ok) {
+            Ok(menu) => {
+                if let Err(error) = tray.set_menu(Some(menu)) {
+                    log::warn!("tray: set menu failed: {error}");
+                }
+                #[cfg(target_os = "macos")]
+                macos_tray::apply(&tray, &resources);
+            }
+            Err(error) => log::warn!("tray: build menu failed: {error}"),
+        }
+    });
+    if let Err(error) = result {
+        log::warn!("tray: dispatch rebuild failed: {error}");
+    }
 }
 
 fn tray_menu(
@@ -1323,20 +1775,21 @@ fn tray_menu(
 fn set_tray_menu(
     app: AppHandle,
     labels: TrayMenuLabels,
-    connected: bool,
+    _connected: bool,
     resources: Vec<TrayResource>,
     more: bool,
-    api_blocked: bool,
-) -> CmdResult<()> {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        return Ok(());
-    };
-    let menu = tray_menu(&app, &labels, connected, &resources, more, api_blocked)
-        .or_err(Reason::Internal, "build tray menu")?;
-    tray.set_menu(Some(menu)).or_err(Reason::Internal, "set tray menu")?;
-    #[cfg(target_os = "macos")]
-    macos_tray::apply(&tray, &resources);
-    Ok(())
+    _api_blocked: bool,
+) {
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let mut model = match state.tray.lock() {
+            Ok(model) => model,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        model.labels = labels;
+        model.resources = resources;
+        model.more = more;
+    }
+    rebuild_tray(&app);
 }
 
 #[derive(Serialize)]
@@ -1381,6 +1834,11 @@ fn save_service_config(app: AppHandle, api_url: String) -> CmdResult<()> {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn restart_app(app: AppHandle) {
+    if let Ok(dir) = app.path().app_config_dir()
+        && let Err(error) = std::fs::write(dir.join(REOPEN_MARKER), b"1")
+    {
+        log::warn!("restart_app: cannot write reopen marker: {error}");
+    }
     let handle = app.clone();
     log::info!("restart_app: restarting application");
     tauri::async_runtime::spawn(async move {
@@ -1403,17 +1861,25 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(log_builder.build())
-        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_autostart::Builder::new().arg("--autostart").build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            let stored = app
-                .path()
-                .app_config_dir()
-                .ok()
-                .as_deref()
-                .map(service_config::load)
-                .unwrap_or_default();
+            let config_dir = app.path().app_config_dir().ok();
+            let reopen_once = config_dir.as_deref().is_some_and(|dir| {
+                let marker = dir.join(REOPEN_MARKER);
+                let exists = marker.exists();
+                if exists {
+                    let _ = std::fs::remove_file(&marker);
+                }
+                exists
+            });
+            let autostart = std::env::args().any(|arg| arg == "--autostart");
+            let prefs_exist = config_dir.as_deref().and_then(prefs::load).is_some();
+            let keep_mode = std::env::var("WARP_ZTNA_WINDOW_MODE").ok().as_deref() == Some("keep");
+            let headless = autostart && prefs_exist && !keep_mode && !reopen_once;
+            let stored = config_dir.as_deref().map(service_config::load).unwrap_or_default();
+            let native_prefs = config_dir.as_deref().and_then(prefs::load).unwrap_or_default();
             let api_base_url = service_config::endpoint(
                 std::env::var("WARP_API_URL").ok().as_deref(),
                 Some(stored.api_url.as_str()),
@@ -1428,6 +1894,7 @@ pub fn run() {
                 daemon_addr: AgentConfig::from_env().netbird_daemon_addr,
                 api_base_url,
                 api_token: std::env::var("WARP_API_TOKEN").ok().filter(|s| !s.is_empty()),
+                http: reqwest::Client::new(),
                 platform: Arc::new(RwLock::new(PlatformService {
                     portal_url,
                     api_auth: ApiOidc::new(OidcConfig::from_env()),
@@ -1435,37 +1902,38 @@ pub fn run() {
                 user_email: Arc::new(Mutex::new(None)),
                 token_email: Arc::new(Mutex::new(None)),
                 hub: Arc::new(StatusHub::default()),
+                tray: Arc::new(std::sync::Mutex::new(TrayModel::new(&native_prefs.lang))),
+                liveness: Arc::new(std::sync::Mutex::new(liveness::LivenessState::default())),
+                dismissed_expiry: Arc::new(std::sync::Mutex::new(None)),
+                window_generation: Arc::new(AtomicU64::new(0)),
+                window_geometry: Arc::new(std::sync::Mutex::new(None)),
+                sso_busy: Arc::new(AtomicUsize::new(0)),
+                pending_action: Arc::new(std::sync::Mutex::new(None)),
                 task: Arc::new(std::sync::Mutex::new(None)),
             });
-            log::info!("Warp ZTNA desktop application started");
-            if let Some(window) = app.get_webview_window("main") {
-                #[cfg(target_os = "macos")]
-                macos_chrome::apply(&window);
-                #[cfg(windows)]
-                if let Ok(hwnd) = window.hwnd() {
-                    apply_win11_corners(hwnd.0 as isize);
-                }
-                let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-            }
+            log::info!("Warp ZTNA desktop application started (headless={headless})");
 
-            let fallback_labels = TrayMenuLabels {
-                open: "显示主窗口".into(),
-                request: "申请访问".into(),
-                resources: "授权资源".into(),
-                connect: "连接".into(),
-                disconnect: "断开".into(),
-                settings: "设置".into(),
-                quit: "退出".into(),
-                more: "更多…".into(),
+            let initial_labels = {
+                let state = app.state::<DesktopState>();
+                let model = match state.tray.lock() {
+                    Ok(model) => model,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                model.labels.clone()
             };
-            let tray_menu = tray_menu(app.handle(), &fallback_labels, false, &[], false, false)?;
+            let tray_menu = tray_menu(app.handle(), &initial_labels, false, &[], false, false)?;
 
-            let tray_icon = Image::from_bytes(tray_icon_bytes("dark")).ok();
+            let tray_icon =
+                Image::from_bytes(initial_tray_icon_bytes(&native_prefs.tray_theme)).ok();
             let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
                 .menu(&tray_menu)
-                .tooltip("零通")
+                .tooltip(i18n::text(&native_prefs.lang, "app.name"))
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| handle_tray_menu_event(app, &event));
+            #[cfg(target_os = "macos")]
+            {
+                tray_builder = tray_builder.icon_as_template(true);
+            }
             if let Some(icon) = tray_icon {
                 tray_builder = tray_builder.icon(icon);
             }
@@ -1473,6 +1941,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Some(tray) = app.tray_by_id(TRAY_ID) {
                 macos_tray::apply(&tray, &[]);
+            }
+
+            if !headless {
+                ensure_main_window(app.handle(), false);
             }
 
             let handle = app.handle().clone();
@@ -1485,6 +1957,71 @@ pub fn run() {
             if let Ok(mut slot) = state.task.lock() {
                 *slot = Some(task);
             }
+
+            let mut connected_rx = state.hub.subscribe_connected();
+            let tray_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while connected_rx.changed().await.is_ok() {
+                    let connected = *connected_rx.borrow();
+                    let (changed, was_connected) =
+                        tray_handle.try_state::<DesktopState>().map_or((false, false), |state| {
+                            let mut model = match state.tray.lock() {
+                                Ok(model) => model,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            let was_connected = model.connected;
+                            if was_connected == connected {
+                                (false, was_connected)
+                            } else {
+                                model.connected = connected;
+                                (true, was_connected)
+                            }
+                        });
+                    if changed {
+                        rebuild_tray(&tray_handle);
+                        if connected && !was_connected {
+                            let handle = tray_handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                if notify::is_connected(&handle).await {
+                                    notify::notify_connection(&handle);
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+
+            let probe_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    if probe_handle.get_webview_window("main").is_some() {
+                        tokio::time::sleep(PROBE_OK_INTERVAL).await;
+                        continue;
+                    }
+                    let ok = match probe_handle.try_state::<DesktopState>() {
+                        Some(state) => probe_api(state.inner()).await.status == "ok",
+                        None => return,
+                    };
+                    update_tray_api(&probe_handle, ok);
+                    tokio::time::sleep(if ok { PROBE_OK_INTERVAL } else { PROBE_RETRY_INTERVAL })
+                        .await;
+                }
+            });
+
+            let resource_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(PROBE_OK_INTERVAL).await;
+                    if resource_handle.get_webview_window("main").is_some() {
+                        continue;
+                    }
+                    refresh_headless_resources(&resource_handle).await;
+                }
+            });
+
+            let notify_handle = app.handle().clone();
+            tauri::async_runtime::spawn(notify::run_session_watch(notify_handle));
 
             Ok(())
         })
@@ -1523,6 +2060,9 @@ pub fn run() {
             get_service_config,
             save_service_config,
             restart_app,
+            frontend_ready,
+            prefs::get_native_prefs,
+            prefs::set_native_prefs,
         ])
         .on_window_event(|window, event| {
             #[cfg(target_os = "macos")]
@@ -1537,8 +2077,11 @@ pub fn run() {
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                let app = window.app_handle().clone();
+                save_window_geometry(&app, window);
                 let _ = window.hide();
                 emit_window_visibility(window, false);
+                schedule_window_destroy(&app);
             }
             if let tauri::WindowEvent::Focused(focused) = event {
                 let visible = window.is_visible().unwrap_or(true);
@@ -1550,8 +2093,14 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("running Warp ZTNA desktop application");
+        .build(tauri::generate_context!())
+        .expect("building Warp ZTNA desktop application")
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => show_main_window(app),
+            _ => {}
+        });
 }
 
 #[cfg(test)]

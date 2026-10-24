@@ -13,7 +13,6 @@ export type Platform = "mac" | "win" | "linux";
 
 export type Prefs = {
   notify: boolean;
-  startup: boolean;
   launch: boolean;
   sessionWarningLeadMin: number;
   assetRefreshMin: number;

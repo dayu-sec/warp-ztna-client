@@ -61,7 +61,6 @@ export function useAgent(
   loadProfiles: () => Promise<void>,
   warningLeadMin = 15,
   assetRefreshMin = 5,
-  connectOnStartup = false,
   notifyEnabled = false,
 ) {
   const [connection, setConnection] = useState<UiConn>("needs-login");
@@ -99,7 +98,6 @@ export function useAgent(
   const meshRetryAtRef = useRef(0);
   const ssoActionRef = useRef<"login" | "extend">("login");
   const prevConnection = useRef<UiConn>(connection);
-  const prevExpiring = useRef(false);
   const notifyEnabledRef = useRef(notifyEnabled);
   notifyEnabledRef.current = notifyEnabled;
   const assetsRunRef = useRef(0);
@@ -196,6 +194,16 @@ export function useAgent(
     }
   }, [showToastRef, trRef]);
 
+  async function ensureApiSession(): Promise<boolean> {
+    try {
+      await native.acquireApiSession();
+      return true;
+    } catch (cause) {
+      showToastRef.current(formatInvokeError(cause) || trRef.current("toast.failed"));
+      return false;
+    }
+  }
+
   const resourceSystems = useMemo(
     () => mapAccessResources(grantRequests, grantCatalog, groupGrants, routes, connected),
     [grantRequests, grantCatalog, groupGrants, routes, connected],
@@ -223,10 +231,7 @@ export function useAgent(
         .map((flip) => `${flip.address}=${flip.live ? "live" : "down"}`)
         .join(", ")} → ${windowHidden ? (notifyEnabledRef.current ? "notification" : "dropped") : "toast"}`,
     );
-    if (windowHidden) {
-      if (notifyEnabledRef.current) void native.notify(trRef.current("app.name"), message);
-      return;
-    }
+    if (windowHidden) return;
     showToastRef.current(message);
   }, [resourceSystems, connected, windowHidden]);
 
@@ -312,34 +317,21 @@ export function useAgent(
         if (!alive) return;
         setDaemonDown(false);
         if (status.state === "connected") {
+          if (!(await ensureApiSession())) {
+            await native.disconnect().catch(() => undefined);
+            setConnection("needs-login");
+            setMainGate("welcome");
+            return;
+          }
           applyStatus(status, true);
           setMainGate("home");
-          await loadResources();
           return;
         }
         const login = await native.checkLogin();
         if (!alive) return;
         if (login.kind === "ready") {
-          const autoUp = connectOnStartup;
-          if (autoUp) {
-            if (status.state !== "connecting") beginConnectWindow();
-            applyStatus({ ...status, state: "connecting" }, true);
-            setMainGate("home");
-            if (status.state !== "connecting") {
-              try {
-                const next = await native.up();
-                if (!alive || connectionRef.current === "disconnected") return;
-                applyStatus(next, true);
-                await loadResources();
-              } catch {
-                endConnectWindow();
-                if (alive && connectionRef.current !== "disconnected") setConnection("error");
-              }
-            }
-          } else {
-            applyStatus(status, true);
-            setMainGate("home");
-          }
+          applyStatus(status, true);
+          setMainGate("home");
           return;
         }
         applyStatus(status, false);
@@ -411,10 +403,15 @@ export function useAgent(
   }, [windowHidden, loadResources]);
 
   useEffect(() => {
-    if (!isTauri() || mainGate !== "home" || !signedIn) return;
+    if (!isTauri() || mainGate !== "home" || !connected) return;
+    void loadResources();
+  }, [connected, mainGate, loadResources]);
+
+  useEffect(() => {
+    if (!isTauri() || mainGate !== "home" || !signedIn || !connected) return;
     if (userEmail !== "—") return;
     void loadUserEmail();
-  }, [mainGate, signedIn, userEmail, loadUserEmail, resourcesOkRun]);
+  }, [mainGate, signedIn, connected, userEmail, loadUserEmail, resourcesOkRun]);
 
   useEffect(() => {
     if (mainGate !== "home" || connection !== "needs-login") return;
@@ -478,19 +475,8 @@ export function useAgent(
     prevConnection.current = connection;
     if (prev === "connecting" && connection === "connected") {
       showToastRef.current(trRef.current("toast.connected"));
-      if (notifyEnabledRef.current) {
-        void native.notify(trRef.current("app.name"), trRef.current("toast.connected"));
-      }
     }
   }, [connection]);
-
-  useEffect(() => {
-    const prev = prevExpiring.current;
-    prevExpiring.current = sessionExpiring;
-    if (!prev && sessionExpiring && notifyEnabledRef.current) {
-      void native.notify(trRef.current("session.title"), trRef.current("session.body"));
-    }
-  }, [sessionExpiring]);
 
   useEffect(() => {
     if (mainGate === "home") void refresh();
@@ -586,6 +572,12 @@ export function useAgent(
         await native.waitSso(result.user_code);
         if (runId !== ssoRunRef.current) return;
       }
+      if (!(await ensureApiSession())) {
+        endConnectWindow();
+        setConnection("needs-login");
+        setMainGate("welcome");
+        return;
+      }
       beginConnectWindow();
       setConnection("connecting");
       setMainGate("home");
@@ -595,7 +587,6 @@ export function useAgent(
       if (connectionRef.current === "disconnected") return;
       applyStatus(status, true);
       setPendingApproval(false);
-      await loadResources();
     } catch (cause) {
       if (runId !== ssoRunRef.current) return;
       if (isPendingApprovalError(cause)) {
@@ -664,6 +655,11 @@ export function useAgent(
       setSessionExpiring(false);
       return;
     }
+    if (!(await ensureApiSession())) {
+      endConnectWindow();
+      setConnection("error");
+      return;
+    }
     beginConnectWindow();
     setConnection("connecting");
     scheduleConnectBurst();
@@ -671,7 +667,6 @@ export function useAgent(
       const status = await native.up();
       if (connectionRef.current === "disconnected") return;
       applyStatus(status, true);
-      await loadResources();
     } catch (cause) {
       endConnectWindow();
       if (connectionRef.current === "disconnected") return;

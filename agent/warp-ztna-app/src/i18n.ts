@@ -1,17 +1,14 @@
+import nativeStrings from "../src-tauri/native-strings.json";
+
 export type Lang = "zh" | "en";
 
 const zh: Record<string, string> = {
-  "app.name": "零通",
-  "nav.settings": "设置",
   "nav.more": "菜单",
   "nav.appearance": "外观",
   "nav.themeDark": "深色",
   "nav.themeLight": "浅色",
   "nav.themeSystem": "跟随系统",
   "action.signInSso": "登录",
-  "action.requestAccess": "申请访问",
-  "action.connect": "连接",
-  "action.disconnect": "断开",
   "action.clickConnect": "点击连接",
   "action.clickDisconnect": "点击断开",
   "action.cancel": "取消",
@@ -45,12 +42,6 @@ const zh: Record<string, string> = {
   "resources.customSystem": "自定义地址",
   "resources.sourceTicket": "工单权限",
   "resources.sourceGroup": "用户组权限",
-  "resources.live": "已开通",
-  "resources.livenessUp": "{name} 已开通",
-  "resources.livenessDown": "{name} 已失效",
-  "resources.livenessUpMany": "{count} 个资源已开通",
-  "resources.livenessDownMany": "{count} 个资源已失效",
-  "resources.livenessMixed": "{up} 个资源已开通，{down} 个已失效",
   "resources.clearSearch": "清除搜索",
   "resources.emptyTitle": "暂无已授权资源",
   "resources.emptySub": "请在下方申请访问",
@@ -61,7 +52,6 @@ const zh: Record<string, string> = {
   "resources.copy": "复制",
   "resources.open": "打开",
   "resources.offlineBanner": "连接后即可访问",
-  "resources.pending": "开通中",
   "resources.ssh": "SSH 登录",
   "resources.sshBusy": "正在准备登录…",
   "resources.sshPending": "证书待签发",
@@ -80,7 +70,6 @@ const zh: Record<string, string> = {
   "settings.about": "关于",
   "settings.language": "显示语言",
   "settings.notifications": "桌面通知",
-  "settings.connectOnStartup": "启动时连接",
   "settings.launchAtLogin": "登录时启动",
   "settings.currentServer": "当前管理服务器",
   "settings.manageProfiles": "管理配置文件 →",
@@ -130,19 +119,12 @@ const zh: Record<string, string> = {
   "welcome.meshRejected": "账号的入网申请已被管理员拒绝，请联系管理员后重试。",
   "welcome.peerConflict": "这台设备已绑定其他账号。Desktop 沿用浏览器当前的 Keycloak 登录态，请改用独立浏览器配置，或以原账号登录后重试。",
   "welcome.usingProfile": "当前配置文件",
-  "session.title": "会话即将过期",
-  "session.body": "续期将打开浏览器完成验证，网络连接保持不断开。",
   "session.renew": "续期",
   "session.later": "稍后",
   "session.relogin": "重新登录",
   "session.logout": "登出",
-  "tray.open": "显示主窗口",
-  "tray.resources": "授权资源",
-  "tray.resourcesMore": "更多…",
-  "tray.quit": "退出",
   "toast.sessionWarn": "会话即将过期，请重新登录或登出",
   "toast.copied": "已复制",
-  "toast.connected": "已连接到网络",
   "toast.sessionRenewed": "会话已续期",
   "toast.signedIn": "登录成功",
   "toast.requiresDesktop": "请在 Desktop 客户端中操作，需本机守护进程",
@@ -163,17 +145,12 @@ const zh: Record<string, string> = {
 };
 
 const en: Record<string, string> = {
-  "app.name": "Warp-ZTNA",
-  "nav.settings": "Settings",
   "nav.more": "Menu",
   "nav.appearance": "Appearance",
   "nav.themeDark": "Dark",
   "nav.themeLight": "Light",
   "nav.themeSystem": "System",
   "action.signInSso": "Sign in",
-  "action.requestAccess": "Request",
-  "action.connect": "Connect",
-  "action.disconnect": "Disconnect",
   "action.clickConnect": "Connect",
   "action.clickDisconnect": "Disconnect",
   "action.cancel": "Cancel",
@@ -207,12 +184,6 @@ const en: Record<string, string> = {
   "resources.customSystem": "Custom addresses",
   "resources.sourceTicket": "Ticket access",
   "resources.sourceGroup": "Group access",
-  "resources.live": "Active",
-  "resources.livenessUp": "{name} is now active",
-  "resources.livenessDown": "{name} is no longer active",
-  "resources.livenessUpMany": "{count} resources are now active",
-  "resources.livenessDownMany": "{count} resources are no longer active",
-  "resources.livenessMixed": "{up} activated, {down} no longer active",
   "resources.clearSearch": "Clear search",
   "resources.emptyTitle": "No authorized resources",
   "resources.emptySub": "Use Request access below",
@@ -223,7 +194,6 @@ const en: Record<string, string> = {
   "resources.copy": "Copy",
   "resources.open": "Open",
   "resources.offlineBanner": "Connect to use these resources",
-  "resources.pending": "Network onboarding",
   "resources.ssh": "SSH login",
   "resources.sshBusy": "Preparing login…",
   "resources.sshPending": "Certificate pending",
@@ -242,7 +212,6 @@ const en: Record<string, string> = {
   "settings.about": "About",
   "settings.language": "Display language",
   "settings.notifications": "Desktop notifications",
-  "settings.connectOnStartup": "Connect on startup",
   "settings.launchAtLogin": "Launch at login",
   "settings.currentServer": "Current management server",
   "settings.manageProfiles": "Manage profiles →",
@@ -293,19 +262,12 @@ const en: Record<string, string> = {
   "welcome.meshRejected": "Your network admission request was rejected. Contact an administrator and try again.",
   "welcome.peerConflict": "This device is already registered by a different account. Desktop reuses the browser's current Keycloak session — use a separate browser profile, or sign in with the original account.",
   "welcome.usingProfile": "Current profile",
-  "session.title": "Session is about to expire",
-  "session.body": "Renewal opens the browser. Your network connection stays up.",
   "session.renew": "Renew",
   "session.later": "Later",
   "session.relogin": "Sign in again",
   "session.logout": "Sign out",
-  "tray.open": "Show main window",
-  "tray.resources": "Authorized resources",
-  "tray.resourcesMore": "More…",
-  "tray.quit": "Quit",
   "toast.sessionWarn": "Session expiring — sign in again or sign out",
   "toast.copied": "Copied",
-  "toast.connected": "Connected to the network",
   "toast.sessionRenewed": "Session renewed",
   "toast.signedIn": "Signed in",
   "toast.requiresDesktop": "Use the Desktop app. The local daemon is required.",
@@ -325,7 +287,15 @@ const en: Record<string, string> = {
   "toast.updateLatest": "You're up to date",
 };
 
-const packs: Record<Lang, Record<string, string>> = { zh, en };
+const shared = nativeStrings as {
+  zh: Record<string, string>;
+  en: Record<string, string>;
+};
+
+const packs: Record<Lang, Record<string, string>> = {
+  zh: { ...zh, ...shared.zh },
+  en: { ...en, ...shared.en },
+};
 
 export function t(lang: Lang, key: string, vars?: Record<string, string>): string {
   let text = packs[lang]?.[key] ?? zh[key] ?? key;
