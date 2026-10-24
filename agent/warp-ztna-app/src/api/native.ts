@@ -202,7 +202,7 @@ export const native = {
   myAccessResources: () => call<AccessResourcePayload>("my_access_resources"),
   myMeshStatus: () => call<MeshStatus>("my_mesh_status"),
   currentUser: () => call<CurrentUser>("current_user"),
-  acquireApiSession: () => call<void>("acquire_api_session"),
+  acquireApiSession: (focus = false) => call<void>("acquire_api_session", { focus }),
   clearApiSession: () => call<void>("clear_api_session"),
   setTrayIconTheme: (theme: "dark" | "light") =>
     call<void>("set_tray_icon_theme", { theme }),

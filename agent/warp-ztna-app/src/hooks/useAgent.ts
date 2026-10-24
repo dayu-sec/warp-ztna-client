@@ -194,9 +194,9 @@ export function useAgent(
     }
   }, [showToastRef, trRef]);
 
-  async function ensureApiSession(): Promise<boolean> {
+  async function ensureApiSession(focus = false): Promise<boolean> {
     try {
-      await native.acquireApiSession();
+      await native.acquireApiSession(focus);
       return true;
     } catch (cause) {
       showToastRef.current(formatInvokeError(cause) || trRef.current("toast.failed"));
@@ -572,7 +572,7 @@ export function useAgent(
         await native.waitSso(result.user_code);
         if (runId !== ssoRunRef.current) return;
       }
-      if (!(await ensureApiSession())) {
+      if (!(await ensureApiSession(true))) {
         endConnectWindow();
         setConnection("needs-login");
         setMainGate("welcome");
@@ -655,7 +655,7 @@ export function useAgent(
       setSessionExpiring(false);
       return;
     }
-    if (!(await ensureApiSession())) {
+    if (!(await ensureApiSession(true))) {
       endConnectWindow();
       setConnection("error");
       return;

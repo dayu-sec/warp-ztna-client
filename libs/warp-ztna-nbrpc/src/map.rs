@@ -102,11 +102,13 @@ pub fn status_view_from_response(response: &StatusResponse) -> StatusView {
     let management_connected =
         full.and_then(|f| f.management_state.as_ref()).is_some_and(|m| m.connected);
     let signal_connected = full.and_then(|f| f.signal_state.as_ref()).is_some_and(|s| s.connected);
-    let peers_connected = full.is_some_and(|full| {
+    let peers_ok = full.is_some_and(|full| {
         full.peers.is_empty()
             || full.peers.iter().any(|peer| peer.conn_status.eq_ignore_ascii_case("connected"))
+            || (full.lazy_connection_enabled
+                && full.peers.iter().all(|peer| peer.conn_status.eq_ignore_ascii_case("idle")))
     });
-    let link_ok = management_connected && signal_connected && peers_connected;
+    let link_ok = management_connected && signal_connected && peers_ok;
 
     let lowered = status_text.to_ascii_lowercase();
     let compact: String = lowered.chars().filter(char::is_ascii_alphanumeric).collect();
@@ -256,6 +258,49 @@ mod tests {
             ..Default::default()
         };
         assert!(!status_view_from_response(&signal_down).link_ok);
+    }
+
+    #[test]
+    fn idle_peers_are_healthy_only_with_lazy_connections() {
+        let base = FullStatus {
+            management_state: Some(ManagementState { connected: true, ..Default::default() }),
+            signal_state: Some(SignalState { connected: true, ..Default::default() }),
+            lazy_connection_enabled: true,
+            ..Default::default()
+        };
+        let idle = StatusResponse {
+            status: "Connected".to_owned(),
+            full_status: Some(FullStatus {
+                peers: vec![PeerState { conn_status: "Idle".to_owned(), ..Default::default() }],
+                ..base.clone()
+            }),
+            ..Default::default()
+        };
+        assert!(status_view_from_response(&idle).link_ok);
+
+        let connecting = StatusResponse {
+            status: "Connected".to_owned(),
+            full_status: Some(FullStatus {
+                peers: vec![PeerState {
+                    conn_status: "Connecting".to_owned(),
+                    ..Default::default()
+                }],
+                ..base.clone()
+            }),
+            ..Default::default()
+        };
+        assert!(!status_view_from_response(&connecting).link_ok);
+
+        let without_lazy = StatusResponse {
+            status: "Connected".to_owned(),
+            full_status: Some(FullStatus {
+                lazy_connection_enabled: false,
+                peers: vec![PeerState { conn_status: "Idle".to_owned(), ..Default::default() }],
+                ..base
+            }),
+            ..Default::default()
+        };
+        assert!(!status_view_from_response(&without_lazy).link_ok);
     }
 
     #[test]

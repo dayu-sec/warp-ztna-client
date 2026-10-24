@@ -904,7 +904,11 @@ async fn current_user(state: tauri::State<'_, DesktopState>) -> CmdResult<Curren
 }
 
 #[tauri::command]
-async fn acquire_api_session(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
+async fn acquire_api_session(
+    app: AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    focus: bool,
+) -> CmdResult<()> {
     log::info!("acquire_api_session: ensuring API token");
     let _busy = SsoBusyGuard::new(Arc::clone(&state.sso_busy));
     let platform = state.platform();
@@ -912,6 +916,9 @@ async fn acquire_api_session(state: tauri::State<'_, DesktopState>) -> CmdResult
         return Ok(());
     }
     let _ = platform.api_auth.access_token().await?;
+    if focus {
+        focus_visible_main_window(&app);
+    }
     Ok(())
 }
 
