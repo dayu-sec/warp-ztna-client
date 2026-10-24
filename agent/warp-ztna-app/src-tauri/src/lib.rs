@@ -2095,11 +2095,15 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("building Warp ZTNA desktop application")
-        .run(|app, event| match event {
-            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-            #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { .. } => show_main_window(app),
-            _ => {}
+        .run(|app, event| {
+            #[cfg(not(target_os = "macos"))]
+            let _ = app;
+            match event {
+                tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => show_main_window(app),
+                _ => {}
+            }
         });
 }
 
