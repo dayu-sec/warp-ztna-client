@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AccessRequest, AccessRequestCatalog, GroupGrant } from "./access";
+import type { ClientUpdate } from "../lib/updateCheck";
 
 export type ConnState =
   | "unknown"
@@ -186,6 +187,8 @@ export type FrontendAction = "settings" | "connect";
 export const native = {
   status: () => call<AgentStatus>("agent_status"),
   apiProbe: () => call<ApiProbe>("api_probe"),
+  checkClientUpdate: () => call<ClientUpdate>("check_client_update"),
+  openUpdatePage: () => call<void>("open_update_page"),
   up: () => call<AgentStatus>("up"),
   disconnect: () => call<AgentStatus>("disconnect"),
   startSso: () => call<SsoStart>("start_sso"),

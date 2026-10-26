@@ -49,6 +49,8 @@ const API_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const CLIENT_CONFIG_TIMEOUT: Duration = Duration::from_secs(3);
 
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
 const PROBE_OK_INTERVAL: Duration = Duration::from_mins(5);
 
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -690,6 +692,115 @@ async fn api_probe(
     let outcome = probe_api(state.inner()).await;
     update_tray_api(&app, outcome.status == "ok");
     Ok(outcome)
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientPackageResponse {
+    #[serde(default)]
+    version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClientUpdateDto {
+    status: &'static str,
+    current: String,
+    latest: Option<String>,
+    detail: Option<String>,
+}
+
+fn parse_client_version(value: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = value.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn classify_client_update(current: &str, latest: Option<&str>) -> ClientUpdateDto {
+    let current = current.trim().to_owned();
+    let Some(latest) = latest.map(str::trim).filter(|value| !value.is_empty()) else {
+        return ClientUpdateDto {
+            status: "unknown",
+            current,
+            latest: None,
+            detail: Some("the platform did not report a latest client version".to_owned()),
+        };
+    };
+    let Some(current_version) = parse_client_version(&current) else {
+        let detail = format!("unexpected current client version: {current}");
+        return ClientUpdateDto {
+            status: "unknown",
+            current,
+            latest: Some(latest.to_owned()),
+            detail: Some(detail),
+        };
+    };
+    let Some(latest_version) = parse_client_version(latest) else {
+        return ClientUpdateDto {
+            status: "unknown",
+            current,
+            latest: Some(latest.to_owned()),
+            detail: Some(format!("unexpected latest client version: {latest}")),
+        };
+    };
+    let status = if latest_version > current_version { "update_available" } else { "latest" };
+    ClientUpdateDto { status, current, latest: Some(latest.to_owned()), detail: None }
+}
+
+async fn fetch_client_package(
+    http: &reqwest::Client,
+    api_base: &str,
+) -> std::result::Result<ClientPackageResponse, String> {
+    let url = format!("{}/api/v1/client-package", api_base.trim_end_matches('/'));
+    let response =
+        http.get(&url).timeout(UPDATE_CHECK_TIMEOUT).send().await.map_err(|cause| {
+            root_message(&because(Reason::External, "check client update", cause))
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("api HTTP {}", status.as_u16()));
+    }
+    response
+        .json::<ClientPackageResponse>()
+        .await
+        .map_err(|cause| root_message(&because(Reason::External, "decode client package", cause)))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn check_client_update(
+    app: AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> CmdResult<ClientUpdateDto> {
+    let current = app.package_info().version.to_string();
+    let dto = match fetch_client_package(&state.http, &state.api_base_url).await {
+        Ok(package) => classify_client_update(&current, package.version.as_deref()),
+        Err(detail) => {
+            ClientUpdateDto { status: "unreachable", current, latest: None, detail: Some(detail) }
+        }
+    };
+    log::info!(
+        "client update: status={} current={} latest={:?}",
+        dto.status,
+        dto.current,
+        dto.latest
+    );
+    Ok(dto)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn open_update_page(state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
+    let portal = state.platform().portal_url.trim().to_owned();
+    let mut url = url::Url::parse(&portal).map_err(|_| {
+        CommandError::coded(Reason::InvalidArgument.code(), "the portal URL is not configured")
+    })?;
+    url.set_fragment(Some("install"));
+    log::debug!("open_update_page: opening the install section");
+    open::that(url.as_str()).or_err(Reason::External, "open update page").map_err(Into::into)
 }
 
 fn update_tray_api(app: &AppHandle, ok: bool) {
@@ -2093,6 +2204,8 @@ pub fn run() {
             remove_profile,
             switch_profile,
             api_probe,
+            check_client_update,
+            open_update_page,
             my_access_resources,
             my_mesh_status,
             current_user,
@@ -2359,5 +2472,108 @@ mod tests {
 
         let busy = passive_token(TokenAttempt::Busy).unwrap_err();
         assert_eq!(busy.code, API_LOGIN_IN_PROGRESS_CODE);
+    }
+
+    #[test]
+    fn client_version_parsing_requires_three_numeric_parts() {
+        assert_eq!(parse_client_version("0.1.16"), Some((0, 1, 16)));
+        assert_eq!(parse_client_version("  1.2.3  "), Some((1, 2, 3)));
+        assert_eq!(parse_client_version("1.2"), None);
+        assert_eq!(parse_client_version("1.2.3.4"), None);
+        assert_eq!(parse_client_version("1.2.x"), None);
+        assert_eq!(parse_client_version(""), None);
+    }
+
+    #[test]
+    fn client_update_classification_covers_newer_equal_ahead_and_unknown() {
+        let newer = classify_client_update("0.1.15", Some("0.1.16"));
+        assert_eq!(newer.status, "update_available");
+        assert_eq!(newer.latest.as_deref(), Some("0.1.16"));
+
+        let equal = classify_client_update("0.1.16", Some("0.1.16"));
+        assert_eq!(equal.status, "latest");
+
+        let ahead = classify_client_update("0.1.17", Some("0.1.16"));
+        assert_eq!(ahead.status, "latest");
+
+        let missing = classify_client_update("0.1.16", None);
+        assert_eq!(missing.status, "unknown");
+        assert!(missing.detail.is_some());
+
+        let invalid = classify_client_update("0.1.16", Some("next"));
+        assert_eq!(invalid.status, "unknown");
+        assert!(invalid.detail.is_some());
+    }
+
+    async fn mock_client_package(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("mock client package listener");
+        let address = listener.local_addr().expect("mock client package address");
+        let task = tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut reader = BufReader::new(stream);
+            let mut request_line = String::new();
+            let _ = reader.read_line(&mut request_line).await;
+            loop {
+                let mut header = String::new();
+                match reader.read_line(&mut header).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if header == "\r\n" => break,
+                    Ok(_) => {}
+                }
+            }
+            let reason = if (200..300).contains(&status) { "OK" } else { "Error" };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let mut stream = reader.into_inner();
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        (format!("http://{address}"), task)
+    }
+
+    #[tokio::test]
+    async fn client_update_fetch_reports_the_published_version() {
+        let (base, task) =
+            mock_client_package(200, r#"{"base_url":"https://pkg.example","version":"9.9.9"}"#)
+                .await;
+        let package =
+            fetch_client_package(&reqwest::Client::new(), &base).await.expect("client package");
+        assert_eq!(package.version.as_deref(), Some("9.9.9"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn client_update_fetch_treats_a_missing_version_as_absent() {
+        let (base, task) =
+            mock_client_package(200, r#"{"base_url":"https://pkg.example","version":null}"#).await;
+        let package =
+            fetch_client_package(&reqwest::Client::new(), &base).await.expect("client package");
+        assert!(package.version.is_none());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn client_update_fetch_surfaces_http_and_decode_failures() {
+        let (base, task) = mock_client_package(503, "{}").await;
+        let error = fetch_client_package(&reqwest::Client::new(), &base).await.expect_err("503");
+        assert_eq!(error, "api HTTP 503");
+        task.abort();
+
+        let (base, task) = mock_client_package(200, "not-json").await;
+        let error =
+            fetch_client_package(&reqwest::Client::new(), &base).await.expect_err("bad json");
+        assert!(!error.is_empty());
+        task.abort();
     }
 }

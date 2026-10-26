@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { collectRows, type ResourceRow } from "./api/access";
-import { isTauri, native } from "./api/native";
+import { formatInvokeError, isTauri, native } from "./api/native";
 import { Titlebar } from "./components/Titlebar";
 import { ConfirmSwitch } from "./components/overlays/ConfirmSwitch";
 import { ProfileDialog } from "./components/overlays/ProfileDialog";
@@ -17,6 +17,7 @@ import { useAgent } from "./hooks/useAgent";
 import { usePrefs } from "./hooks/usePrefs";
 import { useProfiles } from "./hooks/useProfiles";
 import { useServiceConfig } from "./hooks/useServiceConfig";
+import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { detectPlatform, logoSrc } from "./lib/platform";
 import { HomePage } from "./pages/HomePage";
 import { WelcomePage } from "./pages/WelcomePage";
@@ -72,6 +73,25 @@ export function App() {
   const profilesRef = useRef(profiles);
   agentRef.current = agent;
   profilesRef.current = profiles;
+  const update = useUpdateCheck();
+  const updateAvailable = update.result?.status === "update_available";
+  const checkUpdate = update.check;
+
+  useEffect(() => {
+    void checkUpdate();
+  }, [checkUpdate]);
+
+  useEffect(() => {
+    if (surface === "settings" && settingsTab === "about") void checkUpdate();
+  }, [surface, settingsTab, checkUpdate]);
+
+  async function openUpdatePage() {
+    try {
+      await native.openUpdatePage();
+    } catch (cause) {
+      showToast(formatInvokeError(cause) || tr("toast.failed"));
+    }
+  }
 
   const toggleConnect = useCallback(() => void agentRef.current.toggleConnect(), []);
   const copyText = useCallback((text: string) => void agentRef.current.copyText(text), []);
@@ -325,10 +345,11 @@ export function App() {
           surface={surface}
           platform={platform}
           maximized={maximized}
+          updateAvailable={updateAvailable}
           onBack={() => setSurface("main")}
           onOpenSettings={() => {
             setSurface("settings");
-            setSettingsTab("general");
+            setSettingsTab(updateAvailable ? "about" : "general");
           }}
           onToggleTheme={toggleTheme}
         />
@@ -430,7 +451,10 @@ export function App() {
             onDeleteProfile={(p) => void profiles.deleteProfile(p)}
             onPortal={() => void native.openPortal()}
             onHelp={() => void native.openHelp()}
-            onCheckUpdate={() => showToast(tr("toast.updateLatest"))}
+            update={update.result}
+            updateBusy={update.busy}
+            onCheckUpdate={() => void checkUpdate()}
+            onDownloadUpdate={() => void openUpdatePage()}
           />
         )}
 

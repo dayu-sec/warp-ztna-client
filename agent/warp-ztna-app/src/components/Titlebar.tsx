@@ -55,6 +55,7 @@ export function Titlebar({
   surface,
   platform,
   maximized,
+  updateAvailable,
   onBack,
   onOpenSettings,
   onToggleTheme,
@@ -64,6 +65,7 @@ export function Titlebar({
   surface: Surface;
   platform: Platform;
   maximized: boolean;
+  updateAvailable: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
   onToggleTheme: () => void;
@@ -97,11 +99,12 @@ export function Titlebar({
         <button
           type="button"
           className="tb-btn icon more-btn"
-          aria-label={t(lang, "nav.settings")}
-          title={t(lang, "nav.settings")}
+          aria-label={t(lang, updateAvailable ? "nav.settingsUpdate" : "nav.settings")}
+          title={t(lang, updateAvailable ? "nav.settingsUpdate" : "nav.settings")}
           onClick={onOpenSettings}
         >
           <IconMore />
+          {updateAvailable && <span className="tb-update-dot" aria-hidden="true" />}
         </button>
         {platform !== "mac" && (
           <WindowControls

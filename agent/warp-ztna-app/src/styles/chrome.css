@@ -549,3 +549,19 @@ html[data-theme="light"] .btn-contrast {
   width: 28px;
   height: 28px;
 }
+
+.more-btn {
+  position: relative;
+}
+
+.tb-update-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-blue);
+  box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: none;
+}

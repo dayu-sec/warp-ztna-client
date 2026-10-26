@@ -145,6 +145,38 @@
   border-color: var(--border-strong);
 }
 
+.about-links button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.about-update {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 360px;
+  text-align: center;
+}
+
+.about-update-text {
+  font-size: var(--fs-secondary);
+  color: var(--muted);
+}
+
+.about-update-detail {
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.about-update-hint {
+  font-size: var(--fs-caption);
+  color: var(--muted);
+}
+
 .settings-nav {
   width: 188px;
   border-right: 1px solid var(--border);

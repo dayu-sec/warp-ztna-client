@@ -1,5 +1,6 @@
 import { SETTINGS_ICONS } from "../../components/Icons";
 import type { Lang } from "../../i18n";
+import type { ClientUpdate } from "../../lib/updateCheck";
 import type { Prefs, SettingsTab, ThemePref } from "../../types/ui";
 import type { ProfileRow } from "../../types/agent";
 import type { ServiceConfigState } from "../../hooks/useServiceConfig";
@@ -32,7 +33,10 @@ export function SettingsPage({
   onDeleteProfile,
   onPortal,
   onHelp,
+  update,
+  updateBusy,
   onCheckUpdate,
+  onDownloadUpdate,
 }: {
   tab: SettingsTab;
   lang: Lang;
@@ -45,7 +49,9 @@ export function SettingsPage({
   appName: string;
   appVersion: string;
   daemonVersion: string;
-  tr: (key: string) => string;
+  update: ClientUpdate | null;
+  updateBusy: boolean;
+  tr: (key: string, vars?: Record<string, string>) => string;
   onTab: (tab: SettingsTab) => void;
   onLang: (lang: Lang) => void;
   onTheme: (theme: ThemePref) => void;
@@ -59,6 +65,7 @@ export function SettingsPage({
   onPortal: () => void;
   onHelp: () => void;
   onCheckUpdate: () => void;
+  onDownloadUpdate: () => void;
 }) {
   return (
     <div id="surface-settings">
@@ -111,10 +118,13 @@ export function SettingsPage({
               name={appName}
               appVersion={appVersion}
               daemonVersion={daemonVersion}
+              update={update}
+              updateBusy={updateBusy}
               tr={tr}
               onPortal={onPortal}
               onHelp={onHelp}
               onCheckUpdate={onCheckUpdate}
+              onDownloadUpdate={onDownloadUpdate}
             />
           )}
         </div>
