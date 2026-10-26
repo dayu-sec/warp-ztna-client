@@ -1,6 +1,7 @@
 export function SsoOverlay({
   message,
   url,
+  error,
   copyLabel,
   cancelLabel,
   retryLabel,
@@ -10,6 +11,7 @@ export function SsoOverlay({
 }: {
   message: string;
   url: string;
+  error?: string;
   copyLabel: string;
   cancelLabel: string;
   retryLabel?: string;
@@ -19,9 +21,15 @@ export function SsoOverlay({
 }) {
   return (
     <div className="overlay">
-      <div className="modal modal-sso">
-        <div className="spinner" />
-        <p>{message}</p>
+      <div className={error ? "modal modal-sso modal-sso-error" : "modal modal-sso"}>
+        {error ? (
+          <div className="modal-sso-mark" aria-hidden="true">
+            !
+          </div>
+        ) : (
+          <div className="spinner" />
+        )}
+        <p className="modal-sso-message">{message}</p>
         {(retryLabel && onRetry) || url ? (
           <div className="modal-actions">
             {retryLabel && onRetry ? (

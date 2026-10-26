@@ -1,6 +1,9 @@
 use std::{
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -11,14 +14,17 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
-    sync::Mutex,
+    sync::{Mutex, Notify},
     time::timeout,
 };
 use url::Url;
 use warp_ztna_err::prelude::*;
 
 const REDIRECT_PORT: u16 = 37_123;
-const CALLBACK_TIMEOUT: Duration = Duration::from_mins(3);
+const CALLBACK_TIMEOUT: Duration = Duration::from_mins(5);
+const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+type BrowserOpener = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 const ISSUER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_OIDC_ISSUER: &str = "https://ztna-kc.corp.dy-sec.com/realms/warp-ztna";
@@ -124,16 +130,85 @@ enum CallbackParse {
     Error(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum CallbackDirective {
+    NotFound,
+    BadRequest(&'static str),
+    SilentCode(String),
+    SilentInteractionRequired,
+    SilentError(String),
+    InteractiveCode(String),
+    InteractiveError(String),
+    Ignore,
+}
+
+enum CallbackWait {
+    Outcome(CallbackOutcome),
+    Cancelled,
+    TimedOut,
+}
+
+#[derive(Debug)]
+pub(crate) enum ApiSessionError {
+    Cancelled,
+    TimedOut,
+    Busy,
+    BrowserFailed(Error),
+    Failed(Box<Error>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TokenAttempt {
+    Token(String),
+    Absent,
+    Busy,
+}
+
+#[derive(Default)]
+struct CancelSignal {
+    epoch: AtomicU64,
+    notify: Notify,
+}
+
+impl CancelSignal {
+    fn attempt(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    fn cancel(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn is_cancelled(&self, attempt: u64) -> bool {
+        self.epoch.load(Ordering::SeqCst) != attempt
+    }
+
+    async fn cancelled(&self, attempt: u64) {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_cancelled(attempt) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
 /// OIDC client for the API resource-server audience.
 ///
-/// Access and refresh tokens are kept in memory only. Callers share one
-/// serialized entry point ([`ApiOidc::access_token`]) so concurrent requests
-/// never open two browser authorization flows at once.
+/// Access and refresh tokens are kept in memory only. [`ApiOidc::acquire_interactive`]
+/// is the only entry point that may open a browser flow; passive callers use
+/// [`ApiOidc::try_access_token`] and never start one.
 #[derive(Clone)]
 pub struct ApiOidc {
     config: Arc<OidcConfig>,
     cache: Arc<Mutex<Option<CachedToken>>>,
     acquire_lock: Arc<Mutex<()>>,
+    cancel: Arc<CancelSignal>,
+    opener: BrowserOpener,
     http: reqwest::Client,
 }
 
@@ -143,8 +218,16 @@ impl ApiOidc {
             config: Arc::new(config),
             cache: Arc::new(Mutex::new(None)),
             acquire_lock: Arc::new(Mutex::new(())),
+            cancel: Arc::new(CancelSignal::default()),
+            opener: Arc::new(|url: &str| open::that_detached(url)),
             http: reqwest::Client::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_opener(mut self, opener: BrowserOpener) -> Self {
+        self.opener = opener;
+        self
     }
 
     pub fn is_configured(&self) -> bool {
@@ -162,17 +245,29 @@ impl ApiOidc {
             config: Arc::new(config),
             cache: Arc::new(Mutex::new(None)),
             acquire_lock: Arc::new(Mutex::new(())),
+            cancel: Arc::clone(&self.cancel),
+            opener: Arc::clone(&self.opener),
             http: self.http.clone(),
         }
     }
 
-    pub async fn access_token(&self) -> Result<String> {
+    pub(crate) async fn acquire_interactive(&self) -> std::result::Result<String, ApiSessionError> {
         if !self.is_configured() {
-            return Err(explain(Reason::InvalidArgument, "OIDC issuer is not configured"));
+            return Err(ApiSessionError::Failed(Box::new(explain(
+                Reason::InvalidArgument,
+                "OIDC issuer is not configured",
+            ))));
         }
 
         log::info!("api_oidc: acquiring API access token");
-        let _guard = self.acquire_lock.lock().await;
+        let attempt = self.cancel.attempt();
+        if let Some(token) = self.cached_access_token().await {
+            log::debug!("api_oidc: using cached access token");
+            return Ok(token);
+        }
+        let Ok(_guard) = self.acquire_lock.try_lock() else {
+            return Err(ApiSessionError::Busy);
+        };
         if let Some(token) = self.cached_access_token().await {
             log::debug!("api_oidc: using cached access token");
             return Ok(token);
@@ -188,34 +283,42 @@ impl ApiOidc {
             *self.cache.lock().await = None;
         }
 
-        let tokens = self.acquire().await?;
+        let tokens = self.acquire(attempt).await?;
         let access = tokens.access_token.clone();
         self.cache_tokens(tokens).await;
         Ok(access)
     }
 
-    pub(crate) async fn try_access_token(&self) -> Option<String> {
+    pub(crate) async fn try_access_token(&self) -> TokenAttempt {
         if !self.is_configured() {
-            return None;
+            return TokenAttempt::Absent;
+        }
+        if let Some(token) = self.cached_access_token().await {
+            return TokenAttempt::Token(token);
         }
         let Ok(_guard) = self.acquire_lock.try_lock() else {
-            return None;
+            return TokenAttempt::Busy;
         };
         if let Some(token) = self.cached_access_token().await {
-            return Some(token);
+            return TokenAttempt::Token(token);
         }
         if let Some(refresh_token) = self.cached_refresh_token().await {
             if let Ok(tokens) = self.exchange_refresh(&refresh_token).await {
                 let access = tokens.access_token.clone();
                 self.cache_tokens(tokens).await;
-                return Some(access);
+                return TokenAttempt::Token(access);
             }
             *self.cache.lock().await = None;
         }
-        None
+        TokenAttempt::Absent
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancel.cancel();
     }
 
     pub async fn clear(&self) -> Result<()> {
+        self.cancel.cancel();
         let _guard = self.acquire_lock.lock().await;
         if let Some(refresh_token) = self.cached_refresh_token().await {
             log::info!("api_oidc: revoking in-memory refresh token");
@@ -256,22 +359,89 @@ impl ApiOidc {
             .or_err(Reason::Unavailable, "reach the OIDC issuer")
     }
 
-    async fn acquire(&self) -> Result<TokenResponse> {
-        self.ensure_issuer_reachable().await?;
-        let listener = loopback_listener().await?;
-        let silent = self.pending_flow(Some("none"))?;
-        let interactive = self.pending_flow(None)?;
+    async fn acquire(&self, attempt: u64) -> std::result::Result<TokenResponse, ApiSessionError> {
+        self.acquire_within(attempt, CALLBACK_TIMEOUT, CALLBACK_READ_TIMEOUT).await
+    }
+
+    async fn acquire_within(
+        &self,
+        attempt: u64,
+        callback_timeout: Duration,
+        read_timeout: Duration,
+    ) -> std::result::Result<TokenResponse, ApiSessionError> {
+        match tokio::select! {
+            biased;
+            () = self.cancel.cancelled(attempt) => return Err(ApiSessionError::Cancelled),
+            result = self.ensure_issuer_reachable() => result,
+        } {
+            Ok(()) => {}
+            Err(error) => return Err(ApiSessionError::Failed(Box::new(error))),
+        }
+        if self.cancel.is_cancelled(attempt) {
+            return Err(ApiSessionError::Cancelled);
+        }
+        let address =
+            self.redirect_addr().map_err(|error| ApiSessionError::Failed(Box::new(error)))?;
+        let listener = loopback_listener(address)
+            .await
+            .map_err(|error| ApiSessionError::Failed(Box::new(error)))?;
+        let silent = self
+            .pending_flow(Some("none"))
+            .map_err(|error| ApiSessionError::Failed(Box::new(error)))?;
+        let interactive =
+            self.pending_flow(None).map_err(|error| ApiSessionError::Failed(Box::new(error)))?;
+        if self.cancel.is_cancelled(attempt) {
+            return Err(ApiSessionError::Cancelled);
+        }
 
         log::info!("api_oidc: starting silent authorization against issuer={}", self.config.issuer);
-        open::that_detached(&silent.url).or_err(Reason::External, "open OIDC authorization")?;
-
-        let outcome = wait_for_callback(listener, &silent, &interactive).await?;
-        match outcome.callback {
-            AuthCallback::Code(code) => self.exchange_code(&code, &outcome.verifier).await,
-            AuthCallback::Error(error) => {
-                Err(explain(Reason::Unauthorized, format!("OIDC authorization failed: {error}")))
-            }
+        if let Err(source) = (self.opener)(&silent.url) {
+            return Err(ApiSessionError::BrowserFailed(because(
+                Reason::External,
+                "open OIDC authorization",
+                source,
+            )));
         }
+
+        let wait = wait_for_callback(
+            listener,
+            &silent,
+            &interactive,
+            &self.cancel,
+            attempt,
+            callback_timeout,
+            read_timeout,
+        )
+        .await?;
+        let outcome = match wait {
+            CallbackWait::Outcome(outcome) => outcome,
+            CallbackWait::Cancelled => return Err(ApiSessionError::Cancelled),
+            CallbackWait::TimedOut => return Err(ApiSessionError::TimedOut),
+        };
+        match outcome.callback {
+            AuthCallback::Code(code) => self
+                .exchange_code(&code, &outcome.verifier)
+                .await
+                .map_err(|error| ApiSessionError::Failed(Box::new(error))),
+            AuthCallback::Error(error) => Err(ApiSessionError::Failed(Box::new(explain(
+                Reason::Unauthorized,
+                format!("OIDC authorization failed: {error}"),
+            )))),
+        }
+    }
+
+    fn redirect_addr(&self) -> Result<SocketAddr> {
+        let url = Url::parse(&self.config.redirect_uri)
+            .or_err(Reason::InvalidArgument, "invalid OIDC redirect URI")?;
+        let host = url.host_str().unwrap_or("127.0.0.1");
+        let ip = host
+            .parse::<std::net::IpAddr>()
+            .or_err(Reason::InvalidArgument, "invalid OIDC redirect host")?;
+        if !ip.is_loopback() {
+            return Err(explain(Reason::InvalidArgument, "OIDC redirect URI must be loopback"));
+        }
+        let port = url.port_or_known_default().unwrap_or(REDIRECT_PORT);
+        Ok(SocketAddr::new(ip, port))
     }
 
     fn pending_flow(&self, prompt: Option<&str>) -> Result<PendingFlow> {
@@ -358,104 +528,156 @@ impl ApiOidc {
     }
 }
 
-async fn loopback_listener() -> Result<TcpListener> {
-    let socket = SocketAddr::from(([127, 0, 0, 1], REDIRECT_PORT));
-    TcpListener::bind(socket).await.or_err(Reason::Unavailable, "bind loopback OIDC callback")
+async fn loopback_listener(address: SocketAddr) -> Result<TcpListener> {
+    TcpListener::bind(address).await.or_err(Reason::Unavailable, "bind loopback OIDC callback")
 }
 
 async fn wait_for_callback(
     listener: TcpListener,
     silent: &PendingFlow,
     interactive: &PendingFlow,
-) -> Result<CallbackOutcome> {
+    cancel: &CancelSignal,
+    attempt: u64,
+    budget: Duration,
+    read_budget: Duration,
+) -> std::result::Result<CallbackWait, ApiSessionError> {
     let accept = async {
         loop {
-            let (stream, _) =
-                listener.accept().await.or_err(Reason::External, "accept OIDC callback")?;
-            match handle_callback(stream, silent, interactive).await? {
-                CallbackParse::Ignore => {}
-                CallbackParse::SilentCode(code) => {
-                    return Ok(CallbackOutcome {
+            let (stream, _) = listener.accept().await.map_err(|error| {
+                ApiSessionError::Failed(Box::new(because(
+                    Reason::External,
+                    "accept OIDC callback",
+                    error,
+                )))
+            })?;
+            match handle_callback(stream, silent, interactive, read_budget).await {
+                Ok(CallbackParse::Ignore) => {}
+                Ok(CallbackParse::SilentCode(code)) => {
+                    return Ok(CallbackWait::Outcome(CallbackOutcome {
                         callback: AuthCallback::Code(code),
                         verifier: silent.verifier.clone(),
-                    });
+                    }));
                 }
-                CallbackParse::InteractiveCode(code) => {
-                    return Ok(CallbackOutcome {
+                Ok(CallbackParse::InteractiveCode(code)) => {
+                    return Ok(CallbackWait::Outcome(CallbackOutcome {
                         callback: AuthCallback::Code(code),
                         verifier: interactive.verifier.clone(),
-                    });
+                    }));
                 }
-                CallbackParse::Error(error) => {
-                    return Ok(CallbackOutcome {
+                Ok(CallbackParse::Error(error)) => {
+                    return Ok(CallbackWait::Outcome(CallbackOutcome {
                         callback: AuthCallback::Error(error),
                         verifier: String::new(),
-                    });
+                    }));
+                }
+                Err(error) => {
+                    log::debug!("api_oidc: callback connection failed: {error}");
                 }
             }
         }
     };
 
-    timeout(CALLBACK_TIMEOUT, accept).await.or_err(Reason::External, "OIDC callback timed out")?
+    tokio::select! {
+        biased;
+        () = cancel.cancelled(attempt) => Ok(CallbackWait::Cancelled),
+        result = accept => result,
+        () = tokio::time::sleep(budget) => Ok(CallbackWait::TimedOut),
+    }
+}
+
+fn classify_callback(
+    request_line: &str,
+    silent: &PendingFlow,
+    interactive: &PendingFlow,
+) -> CallbackDirective {
+    let Some(params) = callback_params(request_line) else {
+        return CallbackDirective::NotFound;
+    };
+    let Some(state) = params.state else {
+        return CallbackDirective::BadRequest("missing state");
+    };
+
+    if state == silent.state {
+        if let Some(code) = params.code {
+            return CallbackDirective::SilentCode(code);
+        }
+        if let Some(error) = params.error {
+            return if is_interaction_required(&error) {
+                CallbackDirective::SilentInteractionRequired
+            } else {
+                CallbackDirective::SilentError(error)
+            };
+        }
+        return CallbackDirective::Ignore;
+    }
+
+    if state == interactive.state {
+        if let Some(code) = params.code {
+            return CallbackDirective::InteractiveCode(code);
+        }
+        if let Some(error) = params.error {
+            return CallbackDirective::InteractiveError(error);
+        }
+        return CallbackDirective::Ignore;
+    }
+
+    CallbackDirective::BadRequest("state mismatch")
 }
 
 async fn handle_callback(
     stream: TcpStream,
     silent: &PendingFlow,
     interactive: &PendingFlow,
+    read_budget: Duration,
 ) -> Result<CallbackParse> {
     let mut reader = BufReader::new(stream);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line).await.or_err(Reason::External, "read OIDC callback")?;
+    match timeout(read_budget, reader.read_line(&mut request_line)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            log::debug!("api_oidc: reading the callback failed: {error}");
+            return Ok(CallbackParse::Ignore);
+        }
+        Err(_) => {
+            log::debug!("api_oidc: reading the callback timed out");
+            return Ok(CallbackParse::Ignore);
+        }
+    }
     let mut stream = reader.into_inner();
 
-    let Some(params) = callback_params(&request_line) else {
-        write_not_found(&mut stream).await?;
-        return Ok(CallbackParse::Ignore);
-    };
-    let Some(state) = params.state else {
-        write_error_page(&mut stream, "missing state").await?;
-        return Err(explain(Reason::Unauthorized, "OIDC callback missing state"));
-    };
-
-    if state == silent.state {
-        if let Some(code) = params.code {
-            write_self_closing_page(&mut stream).await?;
-            log::debug!("api_oidc: silent authorization code received");
-            return Ok(CallbackParse::SilentCode(code));
-        }
-        if let Some(error) = params.error {
-            if is_interaction_required(&error) {
-                write_redirect(&mut stream, &interactive.url).await?;
-                log::info!(
-                    "api_oidc: silent login unavailable, redirecting to interactive authorization"
-                );
-                return Ok(CallbackParse::Ignore);
+    let (parse, response) = match classify_callback(&request_line, silent, interactive) {
+        CallbackDirective::NotFound => (CallbackParse::Ignore, write_not_found(&mut stream).await),
+        CallbackDirective::BadRequest(reason) => {
+            if reason == "state mismatch" {
+                log::warn!("api_oidc: callback state did not match either pending flow");
             }
-            write_error_page(&mut stream, &error).await?;
-            return Ok(CallbackParse::Error(error));
+            (CallbackParse::Ignore, write_error_page(&mut stream, reason).await)
         }
-        write_self_closing_page(&mut stream).await?;
-        return Ok(CallbackParse::Ignore);
-    }
-
-    if state == interactive.state {
-        if let Some(code) = params.code {
-            write_self_closing_page(&mut stream).await?;
+        CallbackDirective::SilentCode(code) => {
+            log::debug!("api_oidc: silent authorization code received");
+            (CallbackParse::SilentCode(code), write_self_closing_page(&mut stream).await)
+        }
+        CallbackDirective::SilentInteractionRequired => {
+            log::info!(
+                "api_oidc: silent login unavailable, redirecting to interactive authorization"
+            );
+            (CallbackParse::Ignore, write_redirect(&mut stream, &interactive.url).await)
+        }
+        CallbackDirective::SilentError(error) | CallbackDirective::InteractiveError(error) => {
+            (CallbackParse::Error(error.clone()), write_error_page(&mut stream, &error).await)
+        }
+        CallbackDirective::InteractiveCode(code) => {
             log::debug!("api_oidc: interactive authorization code received");
-            return Ok(CallbackParse::InteractiveCode(code));
+            (CallbackParse::InteractiveCode(code), write_self_closing_page(&mut stream).await)
         }
-        if let Some(error) = params.error {
-            write_error_page(&mut stream, &error).await?;
-            return Ok(CallbackParse::Error(error));
+        CallbackDirective::Ignore => {
+            (CallbackParse::Ignore, write_self_closing_page(&mut stream).await)
         }
-        write_self_closing_page(&mut stream).await?;
-        return Ok(CallbackParse::Ignore);
+    };
+    if let Err(error) = response {
+        log::debug!("api_oidc: writing the callback response failed: {error}");
     }
-
-    log::warn!("api_oidc: callback state did not match either pending flow");
-    write_error_page(&mut stream, "state mismatch").await?;
-    Err(explain(Reason::Unauthorized, "OIDC callback state mismatch"))
+    Ok(parse)
 }
 
 async fn write_self_closing_page(stream: &mut TcpStream) -> Result<()> {
@@ -553,6 +775,8 @@ pub(crate) fn email_claim(token: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt;
+
     use super::*;
 
     fn signed_token(payload: &str) -> String {
@@ -727,5 +951,482 @@ mod tests {
         client.clear().await.unwrap();
         assert!(client.cached_access_token().await.is_none());
         assert!(client.cached_refresh_token().await.is_none());
+    }
+
+    fn flow(name: &str) -> PendingFlow {
+        PendingFlow {
+            verifier: format!("verifier-{name}"),
+            state: format!("state-{name}"),
+            url: format!("https://idp.example/{name}"),
+        }
+    }
+
+    #[test]
+    fn callback_timeout_is_five_minutes() {
+        assert_eq!(CALLBACK_TIMEOUT, Duration::from_mins(5));
+    }
+
+    #[test]
+    fn classify_callback_ignores_stale_and_missing_state() {
+        let silent = flow("silent");
+        let interactive = flow("interactive");
+
+        assert_eq!(
+            classify_callback("GET /favicon.ico HTTP/1.1", &silent, &interactive),
+            CallbackDirective::NotFound
+        );
+        assert_eq!(
+            classify_callback("GET /oauth/callback?code=x HTTP/1.1", &silent, &interactive),
+            CallbackDirective::BadRequest("missing state")
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=stale&code=x HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::BadRequest("state mismatch")
+        );
+    }
+
+    #[test]
+    fn classify_callback_matches_silent_and_interactive_flows() {
+        let silent = flow("silent");
+        let interactive = flow("interactive");
+
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-silent&code=sc HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::SilentCode("sc".to_owned())
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-silent&error=interaction_required HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::SilentInteractionRequired
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-silent&error=access_denied HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::SilentError("access_denied".to_owned())
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-silent HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::Ignore
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-interactive&code=ic HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::InteractiveCode("ic".to_owned())
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-interactive&error=access_denied HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::InteractiveError("access_denied".to_owned())
+        );
+        assert_eq!(
+            classify_callback(
+                "GET /oauth/callback?state=state-interactive HTTP/1.1",
+                &silent,
+                &interactive
+            ),
+            CallbackDirective::Ignore
+        );
+    }
+
+    #[test]
+    fn cancel_signal_only_affects_recorded_attempts() {
+        let signal = CancelSignal::default();
+        let attempt = signal.attempt();
+        assert!(!signal.is_cancelled(attempt));
+
+        signal.cancel();
+        assert!(signal.is_cancelled(attempt));
+        assert!(!signal.is_cancelled(signal.attempt()));
+    }
+
+    #[tokio::test]
+    async fn cancel_signal_wakes_waiters_and_is_idempotent() {
+        let signal = Arc::new(CancelSignal::default());
+        let attempt = signal.attempt();
+        let waiter = Arc::clone(&signal);
+        let task = tokio::spawn(async move { waiter.cancelled(attempt).await });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        signal.cancel();
+        signal.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancelled waiter should wake")
+            .expect("waiter task");
+        assert!(signal.is_cancelled(attempt));
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_returns_cancelled() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let signal = Arc::new(CancelSignal::default());
+        let attempt = signal.attempt();
+        let silent = flow("silent");
+        let interactive = flow("interactive");
+        let waiter = Arc::clone(&signal);
+        let task = tokio::spawn(async move {
+            wait_for_callback(
+                listener,
+                &silent,
+                &interactive,
+                &waiter,
+                attempt,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        signal.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancel should end the wait")
+            .expect("waiter task")
+            .expect("wait result");
+        assert!(matches!(result, CallbackWait::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_times_out() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let signal = CancelSignal::default();
+        let attempt = signal.attempt();
+        let result = wait_for_callback(
+            listener,
+            &flow("silent"),
+            &flow("interactive"),
+            &signal,
+            attempt,
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+        )
+        .await
+        .expect("wait result");
+        assert!(matches!(result, CallbackWait::TimedOut));
+    }
+
+    #[tokio::test]
+    async fn stale_callback_does_not_end_the_current_flow() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let signal = CancelSignal::default();
+        let attempt = signal.attempt();
+        let silent = flow("silent");
+        let interactive = flow("interactive");
+        let expected_verifier = interactive.verifier.clone();
+        let task = tokio::spawn(async move {
+            wait_for_callback(
+                listener,
+                &silent,
+                &interactive,
+                &signal,
+                attempt,
+                Duration::from_secs(2),
+                Duration::from_millis(200),
+            )
+            .await
+        });
+
+        let mut stale = TcpStream::connect(address).await.unwrap();
+        stale
+            .write_all(b"GET /oauth/callback?state=stale&code=x HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut valid = TcpStream::connect(address).await.unwrap();
+        valid
+            .write_all(
+                b"GET /oauth/callback?state=state-interactive&code=abc HTTP/1.1\r\nHost: x\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("valid callback should end the wait")
+            .expect("waiter task")
+            .expect("wait result");
+        let CallbackWait::Outcome(outcome) = result else {
+            panic!("expected a callback outcome");
+        };
+        assert_eq!(outcome.verifier, expected_verifier);
+        match outcome.callback {
+            AuthCallback::Code(code) => assert_eq!(code, "abc"),
+            AuthCallback::Error(error) => panic!("unexpected callback error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn passive_token_reports_token_absent_and_busy() {
+        let client = ApiOidc::new(test_config());
+        assert_eq!(client.try_access_token().await, TokenAttempt::Absent);
+
+        let guard = client.acquire_lock.lock().await;
+        assert_eq!(client.try_access_token().await, TokenAttempt::Busy);
+        drop(guard);
+
+        client
+            .cache_tokens(TokenResponse {
+                access_token: "access".to_owned(),
+                expires_in: Some(300),
+                refresh_token: None,
+            })
+            .await;
+        assert_eq!(client.try_access_token().await, TokenAttempt::Token("access".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn interactive_acquisition_does_not_queue_behind_a_busy_lock() {
+        let client = ApiOidc::new(test_config());
+        let guard = client.acquire_lock.lock().await;
+        let result = client.acquire_interactive().await;
+        assert!(matches!(result, Err(ApiSessionError::Busy)));
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn issuer_swap_shares_the_cancel_signal() {
+        let client = ApiOidc::new(test_config());
+        let attempt = client.cancel.attempt();
+        let next = client.with_issuer("https://idp.example/realms/x");
+        next.cancel();
+        assert!(client.cancel.is_cancelled(attempt));
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_the_pending_flow() {
+        let client = ApiOidc::new(test_config());
+        let attempt = client.cancel.attempt();
+        client.clear().await.unwrap();
+        assert!(client.cancel.is_cancelled(attempt));
+    }
+
+    fn free_loopback_port() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("free port");
+        listener.local_addr().expect("local addr").port()
+    }
+
+    fn config_for_redirect(issuer: String, port: u16) -> OidcConfig {
+        OidcConfig {
+            issuer,
+            client_id: "warp-ztna-app".to_owned(),
+            redirect_uri: format!("http://127.0.0.1:{port}/oauth/callback"),
+            scope: "openid profile email offline_access warp-ztna-api".to_owned(),
+        }
+    }
+
+    async fn mock_issuer() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("mock issuer");
+        let address = listener.local_addr().expect("mock address");
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    let mut request_line = String::new();
+                    if reader.read_line(&mut request_line).await.is_err() {
+                        return;
+                    }
+                    let mut content_length = 0_usize;
+                    loop {
+                        let mut header = String::new();
+                        match reader.read_line(&mut header).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) if header == "\r\n" => break,
+                            Ok(_) => {
+                                if let Some(value) =
+                                    header.to_ascii_lowercase().strip_prefix("content-length:")
+                                {
+                                    content_length = value.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                    if content_length > 0 {
+                        let mut body = vec![0_u8; content_length];
+                        if reader.read_exact(&mut body).await.is_err() {
+                            return;
+                        }
+                    }
+                    let body = if request_line.contains("/.well-known/") {
+                        "{}".to_owned()
+                    } else {
+                        r#"{"access_token":"test-access","expires_in":300,"refresh_token":"test-refresh"}"#
+                            .to_owned()
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let mut stream = reader.into_inner();
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{address}/realms/test"), task)
+    }
+
+    fn query_param(url: &str, key: &str) -> Option<String> {
+        let parsed = Url::parse(url).ok()?;
+        parsed.query_pairs().find(|(name, _)| name == key).map(|(_, value)| value.into_owned())
+    }
+
+    async fn loopback_get(port: u16, query: &str) -> reqwest::Response {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("loopback client")
+            .get(format!("http://127.0.0.1:{port}/oauth/callback?{query}"))
+            .send()
+            .await
+            .expect("loopback request")
+    }
+
+    #[test]
+    fn redirect_addr_follows_the_configured_uri() {
+        let mut config = test_config();
+        config.redirect_uri = "http://127.0.0.1:41234/oauth/callback".to_owned();
+        let client = ApiOidc::new(config);
+        assert_eq!(client.redirect_addr().unwrap().port(), 41_234);
+    }
+
+    #[test]
+    fn redirect_addr_rejects_non_loopback_hosts() {
+        let mut config = test_config();
+        config.redirect_uri = "http://idp.example:37123/oauth/callback".to_owned();
+        let client = ApiOidc::new(config);
+        assert!(client.redirect_addr().is_err());
+    }
+
+    #[tokio::test]
+    async fn interactive_flow_handles_stale_callbacks_and_exchanges_the_code() {
+        let (issuer, server) = mock_issuer().await;
+        let port = free_loopback_port();
+        let (urls, mut opened) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let client = ApiOidc::new(config_for_redirect(issuer, port)).with_opener(Arc::new(
+            move |url: &str| {
+                let _ = urls.send(url.to_owned());
+                Ok(())
+            },
+        ));
+        let attempt = client.cancel.attempt();
+        let task = tokio::spawn(async move {
+            client.acquire_within(attempt, Duration::from_secs(2), Duration::from_millis(200)).await
+        });
+
+        let silent = opened.recv().await.expect("silent authorization URL");
+        assert_eq!(query_param(&silent, "prompt").as_deref(), Some("none"));
+        assert_eq!(query_param(&silent, "code_challenge_method").as_deref(), Some("S256"));
+        let silent_state = query_param(&silent, "state").expect("silent state");
+
+        let stale = loopback_get(port, "state=stale&code=x").await;
+        assert_eq!(stale.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let redirect =
+            loopback_get(port, &format!("state={silent_state}&error=interaction_required")).await;
+        assert_eq!(redirect.status(), reqwest::StatusCode::FOUND);
+        let interactive = redirect
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .expect("interactive location")
+            .to_str()
+            .expect("location text")
+            .to_owned();
+        assert!(query_param(&interactive, "prompt").is_none());
+        let interactive_state = query_param(&interactive, "state").expect("interactive state");
+        assert_ne!(interactive_state, silent_state);
+
+        let completed =
+            loopback_get(port, &format!("state={interactive_state}&code=test-code")).await;
+        assert!(completed.status().is_success());
+
+        let token = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("flow should finish")
+            .expect("flow task")
+            .expect("token");
+        assert_eq!(token.access_token, "test-access");
+        assert_eq!(token.refresh_token.as_deref(), Some("test-refresh"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cancel_ends_the_interactive_flow() {
+        let (issuer, server) = mock_issuer().await;
+        let port = free_loopback_port();
+        let client =
+            ApiOidc::new(config_for_redirect(issuer, port)).with_opener(Arc::new(|_: &str| Ok(())));
+        let attempt = client.cancel.attempt();
+        let runner = client.clone();
+        let task = tokio::spawn(async move {
+            runner.acquire_within(attempt, Duration::from_secs(5), Duration::from_millis(200)).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("cancel should end the flow")
+            .expect("flow task");
+        assert!(matches!(result, Err(ApiSessionError::Cancelled)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn interactive_flow_times_out_without_a_callback() {
+        let (issuer, server) = mock_issuer().await;
+        let port = free_loopback_port();
+        let client =
+            ApiOidc::new(config_for_redirect(issuer, port)).with_opener(Arc::new(|_: &str| Ok(())));
+        let attempt = client.cancel.attempt();
+        let result = client
+            .acquire_within(attempt, Duration::from_millis(80), Duration::from_millis(50))
+            .await;
+        assert!(matches!(result, Err(ApiSessionError::TimedOut)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn browser_failure_is_reported_before_waiting() {
+        let (issuer, server) = mock_issuer().await;
+        let port = free_loopback_port();
+        let client =
+            ApiOidc::new(config_for_redirect(issuer, port)).with_opener(Arc::new(|_: &str| {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no browser"))
+            }));
+        let attempt = client.cancel.attempt();
+        let result = client
+            .acquire_within(attempt, Duration::from_secs(1), Duration::from_millis(200))
+            .await;
+        assert!(matches!(result, Err(ApiSessionError::BrowserFailed(_))));
+        server.abort();
     }
 }

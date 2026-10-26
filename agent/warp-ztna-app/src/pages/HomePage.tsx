@@ -179,6 +179,8 @@ export function HomePage({
   resourcesBusy,
   tr,
   sshBusyKey,
+  loginRequired,
+  onSignIn,
   onToggleConnect,
   onCopy,
   onOpenDest,
@@ -203,6 +205,8 @@ export function HomePage({
   resourceSystems: ResourceSystem[];
   resourcesBusy: boolean;
   sshBusyKey: string | null;
+  loginRequired: boolean;
+  onSignIn: () => void;
   tr: (key: string) => string;
   onToggleConnect: () => void;
   onCopy: (text: string) => void;
@@ -246,10 +250,18 @@ export function HomePage({
   const visibleRows = useMemo(() => collectRows(visibleSystems), [visibleSystems]);
   const totalRows = useMemo(() => collectRows(resourceSystems).length, [resourceSystems]);
   const resourceCount = visibleRows.length;
-  const showSyncing = connected && resourcesBusy && totalRows === 0;
+  const showSyncing = connected && resourcesBusy && totalRows === 0 && !loginRequired;
   const showEmpty = !signedIn || (q ? visibleRows.length === 0 : totalRows === 0);
-  const emptyTitle = q && signedIn ? tr("resources.noMatch") : tr("resources.emptyTitle");
-  const emptySub = q && signedIn ? tr("resources.noMatchSub") : tr("resources.emptySub");
+  const emptyTitle = loginRequired
+    ? tr("resources.loginRequiredEmpty")
+    : q && signedIn
+      ? tr("resources.noMatch")
+      : tr("resources.emptyTitle");
+  const emptySub = loginRequired
+    ? ""
+    : q && signedIn
+      ? tr("resources.noMatchSub")
+      : tr("resources.emptySub");
   const isOpen = (key: string) => (q ? true : openKeys[key] !== false);
   const toggle = (key: string) => setOpenKeys((prev) => ({ ...prev, [key]: prev[key] === false }));
 
@@ -409,6 +421,14 @@ export function HomePage({
             </div>
           </div>
           {signedIn && !connected && <div className="offline-banner">{tr("resources.offlineBanner")}</div>}
+          {loginRequired && (
+            <div className="login-banner" role="status">
+              <span>{tr("home.loginRequired")}</span>
+              <button type="button" className="btn btn-ghost" onClick={onSignIn}>
+                {tr("action.signInSso")}
+              </button>
+            </div>
+          )}
           {showSyncing ? (
             <div className="empty">
               <div className="empty-ico" aria-hidden="true">
@@ -423,16 +443,18 @@ export function HomePage({
                 <IconEmptyLock />
               </div>
               <p>{emptyTitle}</p>
-              <p className="muted">{emptySub}</p>
-              <button
-                type="button"
-                className="btn btn-ghost btn-refresh"
-                disabled={resourcesBusy}
-                onClick={onRefreshAssets}
-              >
-                <IconRefresh />
-                <span>{tr("resources.refresh")}</span>
-              </button>
+              {emptySub && <p className="muted">{emptySub}</p>}
+              {!loginRequired && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-refresh"
+                  disabled={resourcesBusy}
+                  onClick={onRefreshAssets}
+                >
+                  <IconRefresh />
+                  <span>{tr("resources.refresh")}</span>
+                </button>
+              )}
             </div>
           ) : (
             resourceView === "grouped" ? (

@@ -181,6 +181,8 @@ export type ServiceConfig = {
   effective_api_url: string;
 };
 
+export type FrontendAction = "settings" | "connect";
+
 export const native = {
   status: () => call<AgentStatus>("agent_status"),
   apiProbe: () => call<ApiProbe>("api_probe"),
@@ -203,6 +205,7 @@ export const native = {
   myMeshStatus: () => call<MeshStatus>("my_mesh_status"),
   currentUser: () => call<CurrentUser>("current_user"),
   acquireApiSession: (focus = false) => call<void>("acquire_api_session", { focus }),
+  cancelApiSession: () => call<void>("cancel_api_session"),
   clearApiSession: () => call<void>("clear_api_session"),
   setTrayIconTheme: (theme: "dark" | "light") =>
     call<void>("set_tray_icon_theme", { theme }),
@@ -233,7 +236,7 @@ export const native = {
   quitApp: () => call<void>("quit_app"),
   getServiceConfig: () => call<ServiceConfig>("get_service_config"),
   saveServiceConfig: (apiUrl: string) => call<void>("save_service_config", { apiUrl }),
-  frontendReady: () => call<string | null>("frontend_ready"),
+  frontendReady: () => call<FrontendAction | null>("frontend_ready"),
   getNativePrefs: () => call<NativePrefs | null>("get_native_prefs"),
   setNativePrefs: (prefs: NativePrefs) => call<void>("set_native_prefs", { prefs }),
   restartApp: () => call<void>("restart_app"),
@@ -302,6 +305,11 @@ export const native = {
     if (!isTauri()) return () => undefined;
     const { listen } = await import("@tauri-apps/api/event");
     return listen<AgentStatus>("agent-status", (event) => onStatus(event.payload));
+  },
+  watchTrayConnect: async (onConnect: () => void) => {
+    if (!isTauri()) return () => undefined;
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen("tray-connect", () => onConnect());
   },
   watchMaximized: async (onChange: (maximized: boolean) => void) => {
     if (!isTauri()) return () => undefined;

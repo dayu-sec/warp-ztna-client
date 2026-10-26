@@ -935,6 +935,20 @@ html[data-theme="light"] .request-pane {
   padding: 6px 10px;
 }
 
+.login-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
 .resources-pane.is-offline .tree {
   opacity: 0.62;
 }

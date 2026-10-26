@@ -20,6 +20,12 @@ import {
   type ApiProbe,
   type SshLaunchPlan,
 } from "../api/native";
+import {
+  apiLoginFailure,
+  apiLoginMessageKey,
+  isApiLoginInProgress,
+  isApiLoginRequired,
+} from "../lib/apiLogin";
 import { nextConnection } from "../lib/connState";
 import { isDaemonDown, isDaemonLive } from "../lib/daemonDown";
 import {
@@ -55,6 +61,28 @@ async function writeToClipboard(text: string): Promise<boolean> {
   }
 }
 
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const timer = window.setTimeout(finish, 120);
+    const raf = window.requestAnimationFrame;
+    if (!raf) {
+      window.clearTimeout(timer);
+      finish();
+      return;
+    }
+    raf(() => raf(() => {
+      window.clearTimeout(timer);
+      finish();
+    }));
+  });
+}
+
 export function useAgent(
   tr: (key: string, vars?: Record<string, string>) => string,
   showToast: (msg: string) => void,
@@ -77,6 +105,8 @@ export function useAgent(
   const [resourcesOkRun, setResourcesOkRun] = useState(0);
   const [ssoBusy, setSsoBusy] = useState(false);
   const [ssoUrl, setSsoUrl] = useState("");
+  const [ssoError, setSsoErrorState] = useState<string | null>(null);
+  const [apiLoginRequired, setApiLoginRequired] = useState(false);
   const [pendingApproval, setPendingApproval] = useState(false);
   const [peerConflict, setPeerConflict] = useState(false);
   const [meshRejected, setMeshRejected] = useState(false);
@@ -95,8 +125,14 @@ export function useAgent(
   const sessionDismissedFor = useRef<number | null>(null);
   const ssoRunRef = useRef(0);
   const ssoInFlightRef = useRef(false);
+  const apiLoginRunRef = useRef(0);
+  const signInFlowRef = useRef(false);
+  const apiSessionPromiseRef = useRef<Promise<{ ok: boolean; cause?: unknown }> | null>(null);
+  const ssoRetryRef = useRef<(() => void) | null>(null);
+  const ssoErrorRef = useRef<string | null>(null);
+  const connectInFlightRef = useRef(false);
+  const trayConnectPendingRef = useRef(false);
   const meshRetryAtRef = useRef(0);
-  const ssoActionRef = useRef<"login" | "extend">("login");
   const prevConnection = useRef<UiConn>(connection);
   const notifyEnabledRef = useRef(notifyEnabled);
   notifyEnabledRef.current = notifyEnabled;
@@ -176,14 +212,24 @@ export function useAgent(
       setGrantRequests(data.requests ?? []);
       setGrantCatalog(data.catalog ?? { groups: [], addresses: [] });
       setGroupGrants(data.group_grants ?? []);
+      setApiLoginRequired(false);
       setResourcesOkRun((run) => run + 1);
     } catch (cause) {
       if (runId !== assetsRunRef.current) return;
+      if (isApiLoginRequired(cause)) {
+        setApiLoginRequired(true);
+        return;
+      }
+      if (isApiLoginInProgress(cause)) return;
       const code = (cause as { code?: string }).code;
       if (code === "biz.unauthorized" || code === "biz.forbidden") {
         setGrantRequests([]);
         setGrantCatalog({ groups: [], addresses: [] });
         setGroupGrants([]);
+        if (code === "biz.unauthorized") {
+          setApiLoginRequired(true);
+          void native.clearApiSession().catch(() => undefined);
+        }
         const message = formatInvokeError(cause) || trRef.current("toast.failed");
         showToastRef.current(message);
       } else if (manual) {
@@ -194,14 +240,89 @@ export function useAgent(
     }
   }, [showToastRef, trRef]);
 
-  async function ensureApiSession(focus = false): Promise<boolean> {
-    try {
-      await native.acquireApiSession(focus);
-      return true;
-    } catch (cause) {
-      showToastRef.current(formatInvokeError(cause) || trRef.current("toast.failed"));
-      return false;
+  function updateSsoError(message: string | null) {
+    ssoErrorRef.current = message;
+    setSsoErrorState(message);
+  }
+
+  function closeLoginOverlay() {
+    setSsoBusy(false);
+    setSsoUrl("");
+    ssoRetryRef.current = null;
+    updateSsoError(null);
+  }
+
+  async function acquireApiSession(focus: boolean): Promise<{ ok: boolean; cause?: unknown }> {
+    if (apiSessionPromiseRef.current) return apiSessionPromiseRef.current;
+    const run = (async () => {
+      try {
+        await native.acquireApiSession(focus);
+        return { ok: true };
+      } catch (cause) {
+        return { ok: false, cause };
+      } finally {
+        apiSessionPromiseRef.current = null;
+      }
+    })();
+    apiSessionPromiseRef.current = run;
+    return run;
+  }
+
+  function loginErrorText(cause: unknown): string {
+    const key = apiLoginMessageKey(cause);
+    if (key) return trRef.current(key);
+    return formatInvokeError(cause) || trRef.current("toast.failed");
+  }
+
+  async function signInVisible(retry?: () => void, focus = true): Promise<boolean> {
+    if (signInFlowRef.current) {
+      const pending = apiSessionPromiseRef.current;
+      if (!pending) return false;
+      return (await pending).ok;
     }
+    signInFlowRef.current = true;
+    try {
+      const runId = ++apiLoginRunRef.current;
+      ssoRetryRef.current = retry ?? (() => void signInVisible());
+      updateSsoError(null);
+      setSsoBusy(true);
+      setSsoUrl("");
+      await nextPaint();
+      if (runId !== apiLoginRunRef.current) return false;
+      const outcome = await acquireApiSession(focus);
+      if (runId !== apiLoginRunRef.current) return false;
+      if (outcome.ok) {
+        setApiLoginRequired(false);
+        closeLoginOverlay();
+        if (mainGateRef.current === "home" && connectionRef.current === "connected") {
+          void loadResources();
+          void loadUserEmail();
+        }
+        return true;
+      }
+      if (apiLoginFailure(outcome.cause) === "cancelled") {
+        closeLoginOverlay();
+        return false;
+      }
+      updateSsoError(loginErrorText(outcome.cause));
+      return false;
+    } finally {
+      signInFlowRef.current = false;
+    }
+  }
+
+  function runPendingTrayConnect() {
+    if (!trayConnectPendingRef.current) return;
+    trayConnectPendingRef.current = false;
+    window.setTimeout(() => void connectNow(), 0);
+  }
+
+  function requestConnect() {
+    if (mainGateRef.current === "pending") {
+      trayConnectPendingRef.current = true;
+      return;
+    }
+    void connectNow();
   }
 
   const resourceSystems = useMemo(
@@ -317,14 +438,19 @@ export function useAgent(
         if (!alive) return;
         setDaemonDown(false);
         if (status.state === "connected") {
-          if (!(await ensureApiSession())) {
+          applyStatus(status, true);
+          setMainGate("home");
+          const restored = await signInVisible(undefined, false);
+          if (!alive) return;
+          if (!restored) {
+            closeLoginOverlay();
             await native.disconnect().catch(() => undefined);
             setConnection("needs-login");
             setMainGate("welcome");
+            setSessionExpired(true);
             return;
           }
-          applyStatus(status, true);
-          setMainGate("home");
+          runPendingTrayConnect();
           return;
         }
         const login = await native.checkLogin();
@@ -332,15 +458,18 @@ export function useAgent(
         if (login.kind === "ready") {
           applyStatus(status, true);
           setMainGate("home");
+          runPendingTrayConnect();
           return;
         }
         applyStatus(status, false);
         setMainGate("welcome");
+        runPendingTrayConnect();
       } catch (cause) {
         if (!alive) return;
         if (announce) {
           showToastRef.current(formatInvokeError(cause) || trRef.current("toast.failed"));
         }
+        trayConnectPendingRef.current = false;
         setDaemonDown(isDaemonDown(cause));
         setMainGate("welcome");
       }
@@ -446,23 +575,40 @@ export function useAgent(
     if (!isTauri() || !pendingApproval || mainGate !== "welcome") return;
     let cancelled = false;
     let inFlight = false;
+    let ready = false;
     const tick = async () => {
-      if (inFlight) return;
+      if (!ready || inFlight) return;
       inFlight = true;
-      const status = await native.myMeshStatus().catch(() => null);
-      inFlight = false;
-      if (cancelled || !status) return;
-      if (status.status === "rejected") {
+      try {
+        const status = await native.myMeshStatus();
+        if (cancelled) return;
+        if (status.status === "rejected") {
+          setPendingApproval(false);
+          setMeshRejected(true);
+          return;
+        }
+        if (status.status !== "approved") return;
+        if (Date.now() - meshRetryAtRef.current < 60_000) return;
+        meshRetryAtRef.current = Date.now();
         setPendingApproval(false);
-        setMeshRejected(true);
-        return;
+        await startSsoRef.current();
+      } catch (cause) {
+        if (isApiLoginRequired(cause)) {
+          ready = false;
+          setApiLoginRequired(true);
+        }
+      } finally {
+        inFlight = false;
       }
-      if (status.status !== "approved") return;
-      if (Date.now() - meshRetryAtRef.current < 60_000) return;
-      meshRetryAtRef.current = Date.now();
-      setPendingApproval(false);
-      await startSsoRef.current();
     };
+    const ensurePendingSession = async () => {
+      if (ready) return;
+      const acquired = await signInVisible(() => void ensurePendingSession(), true);
+      if (cancelled) return;
+      ready = acquired;
+      if (acquired) void tick();
+    };
+    void ensurePendingSession();
     const id = window.setInterval(() => void tick(), 5_000);
     return () => {
       cancelled = true;
@@ -490,7 +636,8 @@ export function useAgent(
     if (ssoInFlightRef.current) return;
     ssoInFlightRef.current = true;
     const runId = ++ssoRunRef.current;
-    ssoActionRef.current = "extend";
+    ssoRetryRef.current = () => void extendSession();
+    updateSsoError(null);
     setSsoBusy(true);
     setSsoUrl("");
     try {
@@ -512,7 +659,10 @@ export function useAgent(
       showToast(formatInvokeError(cause) || tr("toast.failed"));
     } finally {
       ssoInFlightRef.current = false;
-      if (runId === ssoRunRef.current) setSsoBusy(false);
+      if (runId === ssoRunRef.current) {
+        setSsoBusy(false);
+        ssoRetryRef.current = null;
+      }
     }
   }
 
@@ -536,31 +686,32 @@ export function useAgent(
       return;
     }
     if (ssoInFlightRef.current) return;
-    const meshStatus = await native.myMeshStatus().catch(() => null);
-    if (ssoInFlightRef.current) return;
-    if (meshStatus?.status === "pending") {
-      setConnection("needs-login");
-      setMainGate("welcome");
-      setPendingApproval(true);
-      return;
-    }
-    if (meshStatus?.status === "rejected") {
-      setConnection("needs-login");
-      setMainGate("welcome");
-      setPendingApproval(false);
-      setMeshRejected(true);
-      return;
-    }
     ssoInFlightRef.current = true;
-    const runId = ++ssoRunRef.current;
-    ssoActionRef.current = "login";
-    setPendingApproval(false);
-    setPeerConflict(false);
-    setMeshRejected(false);
-    setSessionExpired(false);
-    setSsoBusy(true);
-    setSsoUrl("");
+    let runId = 0;
     try {
+      const meshStatus = await native.myMeshStatus().catch(() => null);
+      if (meshStatus?.status === "pending") {
+        setConnection("needs-login");
+        setMainGate("welcome");
+        setPendingApproval(true);
+        return;
+      }
+      if (meshStatus?.status === "rejected") {
+        setConnection("needs-login");
+        setMainGate("welcome");
+        setPendingApproval(false);
+        setMeshRejected(true);
+        return;
+      }
+      runId = ++ssoRunRef.current;
+      ssoRetryRef.current = () => void startSso();
+      updateSsoError(null);
+      setPendingApproval(false);
+      setPeerConflict(false);
+      setMeshRejected(false);
+      setSessionExpired(false);
+      setSsoBusy(true);
+      setSsoUrl("");
       const result = await native.startSso();
       if (runId !== ssoRunRef.current) return;
       if (result.kind === "sso_required") {
@@ -572,12 +723,17 @@ export function useAgent(
         await native.waitSso(result.user_code);
         if (runId !== ssoRunRef.current) return;
       }
-      if (!(await ensureApiSession(true))) {
-        endConnectWindow();
-        setConnection("needs-login");
-        setMainGate("welcome");
+      const outcome = await acquireApiSession(true);
+      if (runId !== ssoRunRef.current) return;
+      if (!outcome.ok) {
+        if (apiLoginFailure(outcome.cause) === "cancelled") {
+          closeLoginOverlay();
+          return;
+        }
+        updateSsoError(loginErrorText(outcome.cause));
         return;
       }
+      updateSsoError(null);
       beginConnectWindow();
       setConnection("connecting");
       setMainGate("home");
@@ -610,20 +766,65 @@ export function useAgent(
       setConnection((current) => (current === "connecting" ? "error" : current));
     } finally {
       ssoInFlightRef.current = false;
-      if (runId === ssoRunRef.current) setSsoBusy(false);
+      if (runId !== 0 && runId === ssoRunRef.current && !ssoErrorRef.current) {
+        setSsoBusy(false);
+      }
     }
   }
 
   function cancelSso() {
     ssoRunRef.current += 1;
+    apiLoginRunRef.current += 1;
     ssoInFlightRef.current = false;
-    setSsoBusy(false);
-    setSsoUrl("");
+    const pending = apiSessionPromiseRef.current;
+    closeLoginOverlay();
+    void (async () => {
+      await native.cancelApiSession().catch(() => undefined);
+      if (pending) {
+        await Promise.race([pending, new Promise((resolve) => setTimeout(resolve, 1_500))]);
+      }
+    })();
   }
 
   function retrySso() {
-    if (ssoActionRef.current === "extend") void extendSession();
-    else void startSso();
+    const retry = ssoRetryRef.current;
+    if (retry) {
+      retry();
+      return;
+    }
+    void startSso();
+  }
+
+  async function connectNow() {
+    if (connectionRef.current === "connected" || connecting || connectInFlightRef.current) return;
+    if (connectionRef.current === "needs-login") {
+      await startSso();
+      return;
+    }
+    connectInFlightRef.current = true;
+    try {
+      const login = await native.checkLogin().catch(() => null);
+      if (login?.kind === "sso_required") {
+        await startSso();
+        return;
+      }
+      if (!(await signInVisible(() => void connectNow(), true))) return;
+      beginConnectWindow();
+      setConnection("connecting");
+      scheduleConnectBurst();
+      const status = await native.up();
+      if (connectionRef.current === "disconnected") return;
+      applyStatus(status, true);
+    } catch (cause) {
+      endConnectWindow();
+      if (connectionRef.current === "disconnected") return;
+      setConnection("error");
+      const message = formatInvokeError(cause) || tr("toast.failed");
+      showToast(message);
+      if (notifyEnabledRef.current) void native.notify(tr("app.name"), message);
+    } finally {
+      connectInFlightRef.current = false;
+    }
   }
 
   async function toggleConnect() {
@@ -655,26 +856,7 @@ export function useAgent(
       setSessionExpiring(false);
       return;
     }
-    if (!(await ensureApiSession(true))) {
-      endConnectWindow();
-      setConnection("error");
-      return;
-    }
-    beginConnectWindow();
-    setConnection("connecting");
-    scheduleConnectBurst();
-    try {
-      const status = await native.up();
-      if (connectionRef.current === "disconnected") return;
-      applyStatus(status, true);
-    } catch (cause) {
-      endConnectWindow();
-      if (connectionRef.current === "disconnected") return;
-      setConnection("error");
-      const message = formatInvokeError(cause) || tr("toast.failed");
-      showToast(message);
-      if (notifyEnabledRef.current) void native.notify(tr("app.name"), message);
-    }
+    await connectNow();
   }
 
   async function copyText(text: string) {
@@ -694,11 +876,29 @@ export function useAgent(
     else window.open(href, "_blank", "noopener");
   }
 
+  async function withApiLoginRetry<T>(
+    run: () => Promise<T>,
+    retry: () => void,
+  ): Promise<T | null> {
+    try {
+      return await run();
+    } catch (cause) {
+      if (!isApiLoginRequired(cause)) throw cause;
+      if (!(await signInVisible(retry, true))) return null;
+      return await run();
+    }
+  }
+
   async function openSsh(row: ResourceRow) {
     if (!row.ssh || sshBusyKey) return;
+    const ssh = row.ssh;
     setSshBusyKey(row.key);
     try {
-      const plan = await native.sshLaunch(row.ssh.requestId, addressKey(row.address));
+      const plan = await withApiLoginRetry(
+        () => native.sshLaunch(ssh.requestId, addressKey(row.address)),
+        () => void openSsh(row),
+      );
+      if (!plan) return;
       if (plan.status === "launched") showToast(tr("toast.sshLaunched"));
       else setSshFallback(plan);
     } catch (cause) {
@@ -714,9 +914,14 @@ export function useAgent(
 
   async function openSshCopy(row: ResourceRow) {
     if (!row.ssh || sshBusyKey) return;
+    const ssh = row.ssh;
     setSshBusyKey(row.key);
     try {
-      const plan = await native.sshPrepare(row.ssh.requestId, addressKey(row.address));
+      const plan = await withApiLoginRetry(
+        () => native.sshPrepare(ssh.requestId, addressKey(row.address)),
+        () => void openSshCopy(row),
+      );
+      if (!plan) return;
       if (!(await writeToClipboard(plan.command))) {
         showToast(tr("toast.failed"));
         return;
@@ -749,6 +954,10 @@ export function useAgent(
     resourcesBusy,
     ssoBusy,
     ssoUrl,
+    ssoError,
+    apiLoginRequired,
+    signInVisible,
+    requestConnect,
     pendingApproval,
     peerConflict,
     meshRejected,

@@ -32,11 +32,11 @@ mod ssh_login;
 mod sso_tab;
 mod status_hub;
 
-use api_oidc::{ApiOidc, OidcConfig};
+use api_oidc::{ApiOidc, OidcConfig, TokenAttempt};
 use error::{
-    CmdResult, CommandError, SSH_CERT_NOT_READY_CODE, SSH_CLIENT_MISSING_CODE,
-    SSH_NO_LOCAL_KEY_CODE, SSH_NO_REGISTERED_HOST_CODE, SSH_PRINCIPAL_MISMATCH_CODE, classify,
-    lift_mesh, root_message,
+    API_LOGIN_IN_PROGRESS_CODE, API_LOGIN_REQUIRED_CODE, CmdResult, CommandError,
+    SSH_CERT_NOT_READY_CODE, SSH_CLIENT_MISSING_CODE, SSH_NO_LOCAL_KEY_CODE,
+    SSH_NO_REGISTERED_HOST_CODE, SSH_PRINCIPAL_MISMATCH_CODE, classify, lift_mesh, root_message,
 };
 use status_hub::{StatusDto, StatusHub};
 use warp_ztna_cfg::prelude::AgentConfig;
@@ -471,13 +471,26 @@ async fn note_token_email(state: &DesktopState, token: &str) {
     }
 }
 
+fn passive_token(attempt: TokenAttempt) -> CmdResult<String> {
+    match attempt {
+        TokenAttempt::Token(token) => Ok(token),
+        TokenAttempt::Absent => {
+            Err(CommandError::coded(API_LOGIN_REQUIRED_CODE, "the API session is not signed in"))
+        }
+        TokenAttempt::Busy => Err(CommandError::coded(
+            API_LOGIN_IN_PROGRESS_CODE,
+            "the API session is being refreshed",
+        )),
+    }
+}
+
 async fn api_context(state: &DesktopState, context: &str) -> CmdResult<Option<(String, String)>> {
     let base = state.api_base_url.clone();
     let platform = state.platform();
     let token = if let Some(token) = &state.api_token {
         token.clone()
     } else if platform.api_auth.is_configured() {
-        platform.api_auth.access_token().await?
+        passive_token(platform.api_auth.try_access_token().await)?
     } else {
         log::debug!("{context}: OIDC is not configured; continuing without it");
         return Ok(None);
@@ -566,7 +579,9 @@ fn apply_client_config(platform: &mut PlatformService, response: &ClientConfigRe
     if issuer.is_empty() || issuer == platform.api_auth.issuer() {
         return false;
     }
-    platform.api_auth = platform.api_auth.with_issuer(issuer);
+    let next = platform.api_auth.with_issuer(issuer);
+    next.cancel();
+    platform.api_auth = next;
     true
 }
 
@@ -797,7 +812,10 @@ async fn resource_token(state: &DesktopState) -> Option<String> {
     if !platform.api_auth.is_configured() {
         return None;
     }
-    platform.api_auth.try_access_token().await
+    match platform.api_auth.try_access_token().await {
+        TokenAttempt::Token(token) => Some(token),
+        TokenAttempt::Absent | TokenAttempt::Busy => None,
+    }
 }
 
 async fn refresh_headless_resources(app: &AppHandle) {
@@ -915,11 +933,18 @@ async fn acquire_api_session(
     if state.api_token.is_some() || !platform.api_auth.is_configured() {
         return Ok(());
     }
-    let _ = platform.api_auth.access_token().await?;
+    platform.api_auth.acquire_interactive().await.map_err(CommandError::api_session)?;
     if focus {
         focus_visible_main_window(&app);
     }
     Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn cancel_api_session(state: tauri::State<'_, DesktopState>) {
+    log::info!("cancel_api_session: cancelling the pending API sign-in");
+    state.platform().api_auth.cancel();
 }
 
 #[tauri::command]
@@ -1468,6 +1493,24 @@ fn frontend_ready(state: tauri::State<'_, DesktopState>) -> Option<String> {
     }
 }
 
+fn handoff_tray_connect(app: &AppHandle) {
+    if app.get_webview_window("main").is_some() {
+        show_main_window(app);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.emit("tray-connect", ());
+        }
+        return;
+    }
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let mut action = match state.pending_action.lock() {
+            Ok(action) => action,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *action = Some("connect".to_owned());
+    }
+    show_main_window(app);
+}
+
 fn tray_connect(app: &AppHandle) {
     let Some(state) = app.try_state::<DesktopState>() else {
         return;
@@ -1510,8 +1553,8 @@ fn tray_connect(app: &AppHandle) {
         match login_outcome(&mut client).await {
             Ok(SsoStartDto::Ready) => {}
             Ok(SsoStartDto::SsoRequired { .. }) => {
-                log::info!("tray: connect requires sso; showing login window");
-                show_main_window(&handle);
+                log::info!("tray: connect requires a visible sign-in; showing the window");
+                handoff_tray_connect(&handle);
                 return;
             }
             Err(error) => {
@@ -1523,13 +1566,15 @@ fn tray_connect(app: &AppHandle) {
             return;
         };
         let platform = state.platform();
-        if state.api_token.is_none()
-            && platform.api_auth.is_configured()
-            && let Err(error) = platform.api_auth.access_token().await
-        {
-            log::warn!("tray: platform oidc failed: {error}");
-            show_main_window(&handle);
-            return;
+        if state.api_token.is_none() && platform.api_auth.is_configured() {
+            match platform.api_auth.try_access_token().await {
+                TokenAttempt::Token(_) => {}
+                TokenAttempt::Absent | TokenAttempt::Busy => {
+                    log::info!("tray: connect needs a visible sign-in; showing the window");
+                    handoff_tray_connect(&handle);
+                    return;
+                }
+            }
         }
         if let Err(error) = client.up().await {
             log::warn!("tray: connect failed: {error}");
@@ -2052,6 +2097,7 @@ pub fn run() {
             my_mesh_status,
             current_user,
             acquire_api_session,
+            cancel_api_session,
             clear_api_session,
             set_tray_icon_theme,
             set_tray_menu,
@@ -2302,5 +2348,16 @@ mod tests {
             placeholder_replacement("https://api.netbird.io:443", "https://api.netbird.io"),
             None
         );
+    }
+
+    #[test]
+    fn passive_tokens_map_absence_and_lock_contention_to_stable_codes() {
+        assert_eq!(passive_token(TokenAttempt::Token("access".to_owned())).unwrap(), "access");
+
+        let absent = passive_token(TokenAttempt::Absent).unwrap_err();
+        assert_eq!(absent.code, API_LOGIN_REQUIRED_CODE);
+
+        let busy = passive_token(TokenAttempt::Busy).unwrap_err();
+        assert_eq!(busy.code, API_LOGIN_IN_PROGRESS_CODE);
     }
 }

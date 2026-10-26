@@ -130,14 +130,35 @@ export function App() {
     void native
       .frontendReady()
       .then((action) => {
-        if (!disposed && action === "settings") {
+        if (disposed || !action) return;
+        if (action === "settings") {
           setSurface("settings");
           setSettingsTab("general");
+        } else if (action === "connect") {
+          agentRef.current.requestConnect();
         }
       })
       .catch(() => undefined);
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void native
+      .watchTrayConnect(() => {
+        if (!disposed) agentRef.current.requestConnect();
+      })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      });
+    return () => {
+      disposed = true;
+      stop?.();
     };
   }, []);
 
@@ -348,6 +369,8 @@ export function App() {
                 connected={agent.connected}
                 connecting={agent.connecting}
                 signedIn={agent.signedIn}
+                loginRequired={agent.connected && agent.apiLoginRequired}
+                onSignIn={() => void agent.signInVisible()}
                 logo={logo}
                 statusLabel={tr(statusKey)}
                 heroSub={heroSub}
@@ -413,14 +436,15 @@ export function App() {
 
         {agent.ssoBusy && (
           <SsoOverlay
-            message={tr("welcome.ssoProgress")}
+            message={agent.ssoError ?? tr("welcome.ssoProgress")}
             url={agent.ssoUrl}
+            error={agent.ssoError ?? undefined}
             copyLabel={tr("welcome.ssoCopyLink")}
             cancelLabel={tr("action.cancel")}
-            retryLabel={tr("welcome.ssoRetry")}
+            retryLabel={agent.ssoError ? tr("action.retry") : undefined}
             onCopy={(text) => void agent.copyText(text)}
             onCancel={agent.cancelSso}
-            onRetry={agent.retrySso}
+            onRetry={agent.ssoError ? agent.retrySso : undefined}
           />
         )}
 

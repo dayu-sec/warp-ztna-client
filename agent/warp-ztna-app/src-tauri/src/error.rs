@@ -2,6 +2,8 @@ use serde::Serialize;
 use warp_ztna_err::prelude::*;
 use warp_ztna_nbrpc::prelude::MeshAgentRpcError;
 
+use crate::api_oidc::ApiSessionError;
+
 /// Tauri invoke error payload. Only `code` + `message` cross the IPC boundary.
 #[derive(Debug, Serialize)]
 pub(crate) struct CommandError {
@@ -27,6 +29,16 @@ pub(crate) const SSH_CLIENT_MISSING_CODE: &str = "biz.ssh_client_missing";
 
 pub(crate) const SSH_LOCAL_CONFIG_CODE: &str = "biz.ssh_local_config_failed";
 
+pub(crate) const API_LOGIN_REQUIRED_CODE: &str = "biz.api_login_required";
+
+pub(crate) const API_LOGIN_IN_PROGRESS_CODE: &str = "biz.api_login_in_progress";
+
+pub(crate) const API_LOGIN_TIMEOUT_CODE: &str = "biz.api_login_timeout";
+
+pub(crate) const API_LOGIN_CANCELLED_CODE: &str = "biz.api_login_cancelled";
+
+pub(crate) const API_LOGIN_BROWSER_FAILED_CODE: &str = "biz.api_login_browser_failed";
+
 impl CommandError {
     pub(crate) fn coded(code: &str, message: impl Into<String>) -> Self {
         let message = message.into();
@@ -47,6 +59,25 @@ impl CommandError {
         Self {
             code: PEER_CONFLICT_CODE.to_owned(),
             message: "this device is already registered by a different account".to_owned(),
+        }
+    }
+
+    pub(crate) fn api_session(error: ApiSessionError) -> Self {
+        match error {
+            ApiSessionError::Cancelled => {
+                Self::coded(API_LOGIN_CANCELLED_CODE, "API sign-in cancelled")
+            }
+            ApiSessionError::TimedOut => {
+                Self::coded(API_LOGIN_TIMEOUT_CODE, "waiting for the browser sign-in timed out")
+            }
+            ApiSessionError::Busy => Self::coded(
+                API_LOGIN_IN_PROGRESS_CODE,
+                "another API sign-in is already in progress",
+            ),
+            ApiSessionError::BrowserFailed(error) => {
+                Self::coded(API_LOGIN_BROWSER_FAILED_CODE, root_message(&error))
+            }
+            ApiSessionError::Failed(error) => Self::from(*error),
         }
     }
 }
@@ -176,5 +207,41 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.reason(), &Reason::External);
         assert_eq!(err.detail().as_deref(), Some("unsupported netbird daemon version"));
+    }
+
+    #[test]
+    fn api_session_errors_use_stable_ipc_codes() {
+        let cancelled = CommandError::api_session(ApiSessionError::Cancelled);
+        assert_eq!(cancelled.code, API_LOGIN_CANCELLED_CODE);
+
+        let busy = CommandError::api_session(ApiSessionError::Busy);
+        assert_eq!(busy.code, API_LOGIN_IN_PROGRESS_CODE);
+
+        let failed = CommandError::api_session(ApiSessionError::Failed(Box::new(explain(
+            Reason::Unavailable,
+            "reach the OIDC issuer",
+        ))));
+        assert_eq!(failed.code, "sys.unavailable");
+        assert_eq!(failed.message, "reach the OIDC issuer");
+    }
+
+    #[test]
+    fn api_session_timeout_has_a_readable_message() {
+        let err = CommandError::api_session(ApiSessionError::TimedOut);
+        assert_eq!(err.code, API_LOGIN_TIMEOUT_CODE);
+        assert_eq!(err.message, "waiting for the browser sign-in timed out");
+        assert!(!err.message.contains("deadline"));
+    }
+
+    #[test]
+    fn api_session_browser_failure_keeps_the_root_cause() {
+        let cause = MeshAgentRpcError::Message("no browser available".to_owned());
+        let err = CommandError::api_session(ApiSessionError::BrowserFailed(because(
+            Reason::External,
+            "open OIDC authorization",
+            cause,
+        )));
+        assert_eq!(err.code, API_LOGIN_BROWSER_FAILED_CODE);
+        assert_eq!(err.message, "no browser available");
     }
 }
