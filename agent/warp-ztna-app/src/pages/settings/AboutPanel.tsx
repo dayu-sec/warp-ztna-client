@@ -1,8 +1,29 @@
-import { IconExtLink, IconRefresh } from "../../components/Icons";
+import {
+  IconArrow,
+  IconCheck,
+  IconExtLink,
+  IconRefresh,
+  IconWarn,
+} from "../../components/Icons";
 import { clientUpdateDetail, clientUpdateView, type ClientUpdate } from "../../lib/updateCheck";
 
 const NETBIRD_OWNER = "NetBird GmbH";
 const NETBIRD_COPYRIGHT = "© 2022 NetBird GmbH & AUTHORS";
+
+function updateStateClassName(update: ClientUpdate | null, busy: boolean): string {
+  if (busy) return "about-update-state is-checking";
+  if (update?.status === "latest") return "about-update-state is-latest";
+  if (update?.status === "unknown" || update?.status === "unreachable")
+    return "about-update-state is-unknown";
+  return "about-update-state";
+}
+
+function updateStateIcon(update: ClientUpdate | null, busy: boolean) {
+  if (busy) return <IconRefresh />;
+  if (update?.status === "latest") return <IconCheck />;
+  if (update?.status === "unknown" || update?.status === "unreachable") return <IconWarn />;
+  return null;
+}
 
 export function AboutPanel({
   logo,
@@ -60,20 +81,30 @@ export function AboutPanel({
             <span>{tr("about.checkUpdate")}</span>
             <IconRefresh />
           </button>
-        </div>
-        <div className="about-update" role="status" aria-live="polite">
-          <p className="about-update-text">{tr(updateView.key, updateView.vars)}</p>
-          {updateDetail && <p className="about-update-detail">{updateDetail}</p>}
-          {updateView.canDownload && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={onDownloadUpdate}
-            >
-              {tr("about.updateDownload")}
-            </button>
-          )}
-          {updateView.canDownload && <p className="about-update-hint">{tr("about.updateHint")}</p>}
+          <div className="about-update" role="status" aria-live="polite">
+            {updateView.canDownload ? (
+              <>
+                <button type="button" className="about-update-row" onClick={onDownloadUpdate}>
+                  <span className="about-update-name">
+                    {tr(updateView.key, updateView.vars)}
+                  </span>
+                  <span className="about-update-cta">
+                    {tr("about.updateDownload")}
+                    <IconArrow />
+                  </span>
+                </button>
+                <p className="about-update-hint">{tr("about.updateHint")}</p>
+              </>
+            ) : (
+              <>
+                <p className={updateStateClassName(update, updateBusy)}>
+                  {updateStateIcon(update, updateBusy)}
+                  <span>{tr(updateView.key, updateView.vars)}</span>
+                </p>
+                {updateDetail && <p className="about-update-detail">{updateDetail}</p>}
+              </>
+            )}
+          </div>
         </div>
         <p className="about-attribution">
           {usageParts[0]}

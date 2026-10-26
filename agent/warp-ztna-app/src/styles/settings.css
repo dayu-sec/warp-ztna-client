@@ -153,16 +153,81 @@
 .about-update {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  max-width: 360px;
-  text-align: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+  text-align: left;
 }
 
-.about-update-text {
+.about-links .about-update-row {
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  border-color: color-mix(in srgb, var(--brand-blue) 22%, var(--border));
+  background: color-mix(in srgb, var(--brand-blue) 6%, var(--surface-2));
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+}
+
+.about-links .about-update-row:hover {
+  border-color: color-mix(in srgb, var(--brand-blue) 36%, var(--border));
+  background: color-mix(in srgb, var(--brand-blue) 10%, var(--surface-2));
+}
+
+.about-update-row:active {
+  transform: scale(0.995);
+}
+
+.about-update-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand-blue) 55%, var(--text));
+  outline-offset: 2px;
+}
+
+.about-update-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.about-update-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
   font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: color-mix(in srgb, var(--brand-blue) 55%, var(--text));
+}
+
+.about-update-cta svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s var(--ease);
+}
+
+.about-update-row:hover .about-update-cta svg {
+  transform: translateX(2px);
+}
+
+.about-update-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
   color: var(--muted);
+}
+
+.about-update-state svg {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  margin-top: 2px;
+}
+
+.about-update-state.is-latest svg {
+  color: var(--live);
+}
+
+.about-update-state.is-checking svg {
+  animation: spin 0.9s linear infinite;
 }
 
 .about-update-detail {
@@ -170,11 +235,14 @@
   line-height: 1.5;
   color: var(--muted);
   word-break: break-word;
+  padding-left: 19px;
 }
 
 .about-update-hint {
   font-size: var(--fs-caption);
+  line-height: 1.5;
   color: var(--muted);
+  padding: 0 2px;
 }
 
 .settings-nav {
