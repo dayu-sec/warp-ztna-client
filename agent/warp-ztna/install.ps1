@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$WarpVersion = "0.1.15"
+$WarpVersion = "0.1.16"
 $NetbirdVersion = "0.80.0"
 $DefaultBaseUrl = "https://github.com/dayu-sec/warp-ztna-client/releases/download"
 $ServiceName = "warp-ztna"
