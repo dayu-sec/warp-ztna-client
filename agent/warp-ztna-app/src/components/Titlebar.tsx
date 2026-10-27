@@ -11,35 +11,9 @@ function isInteractiveDragTarget(target: EventTarget | null): boolean {
   );
 }
 
-function WindowControls({
-  maximized,
-  onMinimize,
-  onMaximize,
-  onClose,
-}: {
-  maximized: boolean;
-  onMinimize: () => void;
-  onMaximize: () => void;
-  onClose: () => void;
-}) {
+function CloseControl({ onClose }: { onClose: () => void }) {
   return (
     <div className="win-controls">
-      <button type="button" className="win-ctrl min" aria-label="Minimize" onClick={onMinimize}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M1 5h8" stroke="currentColor" strokeWidth="1.2" />
-        </svg>
-      </button>
-      <button type="button" className="win-ctrl max" aria-label="Maximize" onClick={onMaximize}>
-        {maximized ? (
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M3 3.6h4.2V8H3zM2.4 2h4.8v1.2H3.6V7.2H2.4z" fill="currentColor" />
-          </svg>
-        ) : (
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <rect x="1.4" y="1.4" width="7.2" height="7.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
-          </svg>
-        )}
-      </button>
       <button type="button" className="win-ctrl close" aria-label="Close" onClick={onClose}>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
           <path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.2" />
@@ -49,43 +23,11 @@ function WindowControls({
   );
 }
 
-function TrafficControls({
-  maximized,
-  onMinimize,
-  onMaximize,
-  onClose,
-}: {
-  maximized: boolean;
-  onMinimize: () => void;
-  onMaximize: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="traffic-controls">
-      <button type="button" className="traffic-dot close" aria-label="Close" onClick={onClose} />
-      <button
-        type="button"
-        className="traffic-dot min"
-        aria-label="Minimize"
-        onClick={onMinimize}
-      />
-      <button
-        type="button"
-        className="traffic-dot max"
-        data-maximized={maximized || undefined}
-        aria-label={maximized ? "Restore" : "Maximize"}
-        onClick={onMaximize}
-      />
-    </div>
-  );
-}
-
 export function Titlebar({
   lang,
   theme,
   surface,
   platform,
-  maximized,
   updateAvailable,
   onBack,
   onOpenSettings,
@@ -95,7 +37,6 @@ export function Titlebar({
   theme: "dark" | "light";
   surface: Surface;
   platform: Platform;
-  maximized: boolean;
   updateAvailable: boolean;
   onBack: () => void;
   onOpenSettings: () => void;
@@ -109,14 +50,6 @@ export function Titlebar({
   return (
     <header className="titlebar" data-tauri-drag-region onMouseDown={onWindowDrag}>
       <div className="titlebar-left">
-        {platform === "win" && (
-          <TrafficControls
-            maximized={maximized}
-            onMinimize={() => void native.minimize()}
-            onMaximize={() => void native.toggleMaximize()}
-            onClose={() => void native.quitApp()}
-          />
-        )}
         {surface === "settings" && (
           <button type="button" className="tb-btn titlebar-back" onClick={onBack}>
             <IconBack />
@@ -145,12 +78,13 @@ export function Titlebar({
           <IconMore />
           {updateAvailable && <span className="tb-update-dot" aria-hidden="true" />}
         </button>
-        {platform === "linux" && (
-          <WindowControls
-            maximized={maximized}
-            onMinimize={() => void native.minimize()}
-            onMaximize={() => void native.toggleMaximize()}
-            onClose={() => void native.quitApp()}
+        {platform !== "mac" && (
+          <CloseControl
+            onClose={() => {
+              void native
+                .closeWindow()
+                .catch((cause) => console.error("close window failed", cause));
+            }}
           />
         )}
       </div>

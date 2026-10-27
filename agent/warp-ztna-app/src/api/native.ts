@@ -236,7 +236,11 @@ export const native = {
     call<SshLaunchPlan>("ssh_launch", { requestId, address }),
   sshPrepare: (requestId: string, address: string) =>
     call<SshPreparePlan>("ssh_prepare", { requestId, address }),
-  quitApp: () => call<void>("quit_app"),
+  closeWindow: async () => {
+    if (!isTauri()) return;
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().close();
+  },
   getServiceConfig: () => call<ServiceConfig>("get_service_config"),
   saveServiceConfig: (apiUrl: string) => call<void>("save_service_config", { apiUrl }),
   frontendReady: () => call<FrontendAction | null>("frontend_ready"),
@@ -250,24 +254,6 @@ export const native = {
       await getCurrentWindow().startDragging();
     } catch {
       await call<void>("start_dragging").catch(() => undefined);
-    }
-  },
-  minimize: async () => {
-    if (!isTauri()) return;
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().minimize();
-    } catch {
-      await call<void>("minimize_window").catch(() => undefined);
-    }
-  },
-  toggleMaximize: async () => {
-    if (!isTauri()) return;
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().toggleMaximize();
-    } catch {
-      await call<void>("toggle_maximize_window").catch(() => undefined);
     }
   },
   setAutostart: async (enabled: boolean) => {

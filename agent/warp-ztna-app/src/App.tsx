@@ -344,7 +344,6 @@ export function App() {
           theme={theme}
           surface={surface}
           platform={platform}
-          maximized={maximized}
           updateAvailable={updateAvailable}
           onBack={() => setSurface("main")}
           onOpenSettings={() => {

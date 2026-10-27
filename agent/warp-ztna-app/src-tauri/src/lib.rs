@@ -1331,22 +1331,6 @@ fn start_dragging(window: tauri::Window) -> CmdResult<()> {
     window.start_dragging().or_err(Reason::Internal, "window chrome").map_err(Into::into)
 }
 
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn minimize_window(window: tauri::Window) -> CmdResult<()> {
-    window.minimize().or_err(Reason::Internal, "window chrome").map_err(Into::into)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn toggle_maximize_window(window: tauri::Window) -> CmdResult<()> {
-    if window.is_maximized().or_err(Reason::Internal, "window chrome")? {
-        window.unmaximize().or_err(Reason::Internal, "window chrome").map_err(Into::into)
-    } else {
-        window.maximize().or_err(Reason::Internal, "window chrome").map_err(Into::into)
-    }
-}
-
 #[cfg(windows)]
 fn apply_win11_corners(hwnd: isize) {
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
@@ -1369,18 +1353,6 @@ fn apply_win11_corners(hwnd: isize) {
             4,
         );
     }
-}
-
-#[tauri::command]
-async fn quit_app(app: tauri::AppHandle, state: tauri::State<'_, DesktopState>) -> CmdResult<()> {
-    log::info!("quit: requested");
-    stop_status_stream(&state);
-    let _ = tokio::time::timeout(Duration::from_secs(2), state.platform().api_auth.clear()).await;
-    if let Ok(mut client) = connect_client(&state).await {
-        let _ = client.down().await;
-    }
-    app.exit(0);
-    Ok(())
 }
 
 fn logging_plugin_builder() -> tauri_plugin_log::Builder {
@@ -2222,9 +2194,6 @@ pub fn run() {
             ssh_launch,
             ssh_prepare,
             start_dragging,
-            minimize_window,
-            toggle_maximize_window,
-            quit_app,
             get_service_config,
             save_service_config,
             restart_app,
