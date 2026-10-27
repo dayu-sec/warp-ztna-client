@@ -70,6 +70,7 @@ jobs:
         run: cargo fmt -p warp-ztna-app -- --check
       - run: cargo clippy --locked -p warp-ztna-app --all-targets -- -D warnings
       - run: cargo test --locked -p warp-ztna-app
+      - run: cargo test --locked -p warp-ztna-nbrpc
 
   guard-version:
     runs-on: ubuntu-latest

@@ -49,6 +49,37 @@ function WindowControls({
   );
 }
 
+function TrafficControls({
+  maximized,
+  onMinimize,
+  onMaximize,
+  onClose,
+}: {
+  maximized: boolean;
+  onMinimize: () => void;
+  onMaximize: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="traffic-controls">
+      <button type="button" className="traffic-dot close" aria-label="Close" onClick={onClose} />
+      <button
+        type="button"
+        className="traffic-dot min"
+        aria-label="Minimize"
+        onClick={onMinimize}
+      />
+      <button
+        type="button"
+        className="traffic-dot max"
+        data-maximized={maximized || undefined}
+        aria-label={maximized ? "Restore" : "Maximize"}
+        onClick={onMaximize}
+      />
+    </div>
+  );
+}
+
 export function Titlebar({
   lang,
   theme,
@@ -78,6 +109,14 @@ export function Titlebar({
   return (
     <header className="titlebar" data-tauri-drag-region onMouseDown={onWindowDrag}>
       <div className="titlebar-left">
+        {platform === "win" && (
+          <TrafficControls
+            maximized={maximized}
+            onMinimize={() => void native.minimize()}
+            onMaximize={() => void native.toggleMaximize()}
+            onClose={() => void native.quitApp()}
+          />
+        )}
         {surface === "settings" && (
           <button type="button" className="tb-btn titlebar-back" onClick={onBack}>
             <IconBack />
@@ -106,7 +145,7 @@ export function Titlebar({
           <IconMore />
           {updateAvailable && <span className="tb-update-dot" aria-hidden="true" />}
         </button>
-        {platform !== "mac" && (
+        {platform === "linux" && (
           <WindowControls
             maximized={maximized}
             onMinimize={() => void native.minimize()}

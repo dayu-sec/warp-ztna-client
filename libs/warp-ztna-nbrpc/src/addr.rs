@@ -7,8 +7,8 @@ use crate::error::MeshAgentRpcError;
 pub enum DaemonAddr {
     /// `unix:///path/to.sock`
     Unix(PathBuf),
-    /// Windows named pipe path (with or without `\\.\pipe\` prefix).
-    NamedPipe(String),
+    /// Windows named pipe name or path.
+    NamedPipe { name: Option<String>, path: String },
     /// Explicit TCP (discouraged in production on `NetBird` ≥ 0.76).
     Tcp(String),
 }
@@ -28,7 +28,14 @@ impl DaemonAddr {
         if let Some((scheme, rest)) = trimmed.split_once("://") {
             return match scheme {
                 "unix" => Ok(Self::Unix(PathBuf::from(rest))),
-                "npipe" => Ok(Self::NamedPipe(normalize_pipe_name(rest))),
+                "npipe" => {
+                    if rest.trim().is_empty() {
+                        return Err(MeshAgentRpcError::InvalidAddress(
+                            "named pipe name is empty".to_owned(),
+                        ));
+                    }
+                    Ok(Self::parse_named_pipe(rest))
+                }
                 "tcp" => Ok(Self::Tcp(rest.to_owned())),
                 other => Err(MeshAgentRpcError::InvalidAddress(format!(
                     "unsupported scheme {other:?} (use unix, npipe, or tcp)"
@@ -46,12 +53,32 @@ impl DaemonAddr {
         )))
     }
 
+    fn parse_named_pipe(rest: &str) -> Self {
+        if is_qualified_pipe_name(rest) {
+            return Self::NamedPipe { name: None, path: normalize_pipe_name(rest) };
+        }
+        let name = rest.trim_start_matches('/').to_owned();
+        Self::NamedPipe { name: Some(name.clone()), path: format!(r"\\.\pipe\{name}") }
+    }
+
     #[must_use]
     pub fn display(&self) -> String {
         match self {
             Self::Unix(path) => format!("unix://{}", path.display()),
-            Self::NamedPipe(name) => format!("npipe://{name}"),
+            Self::NamedPipe { name: Some(name), .. } => format!("npipe://{name}"),
+            Self::NamedPipe { path, .. } => format!("npipe://{path}"),
             Self::Tcp(endpoint) => format!("tcp://{endpoint}"),
+        }
+    }
+
+    #[must_use]
+    pub fn pipe_dial_path(&self) -> Option<String> {
+        match self {
+            Self::NamedPipe { name: Some(name), .. } => {
+                Some(format!(r"\\.\pipe\ProtectedPrefix\Administrators\{name}"))
+            }
+            Self::NamedPipe { path, .. } => Some(path.clone()),
+            Self::Unix(_) | Self::Tcp(_) => None,
         }
     }
 }
@@ -62,7 +89,10 @@ pub fn default_daemon_addr() -> DaemonAddr {
     #[cfg(windows)]
     {
         // NetBird v0.76 uses a protected named pipe; bare name is resolved by the client.
-        DaemonAddr::NamedPipe(r"\\.\pipe\netbird".to_owned())
+        DaemonAddr::NamedPipe {
+            name: Some("netbird".to_owned()),
+            path: r"\\.\pipe\netbird".to_owned(),
+        }
     }
     #[cfg(not(windows))]
     {
@@ -100,6 +130,10 @@ fn discover_single_unix_socket(dir: &Path) -> Option<DaemonAddr> {
     if found.len() == 1 { Some(DaemonAddr::Unix(found.remove(0))) } else { None }
 }
 
+fn is_qualified_pipe_name(rest: &str) -> bool {
+    rest.starts_with(r"\\") || rest.starts_with("//./pipe/") || rest.starts_with(r".\pipe\")
+}
+
 fn normalize_pipe_name(rest: &str) -> String {
     if rest.starts_with(r"\\.\pipe\") || rest.starts_with("//./pipe/") {
         rest.replace('/', r"\")
@@ -123,11 +157,35 @@ mod tests {
     #[test]
     fn parses_npipe() {
         let addr = DaemonAddr::parse("npipe://netbird").unwrap();
-        assert_eq!(addr, DaemonAddr::NamedPipe(r"\\.\pipe\netbird".to_owned()));
+        assert_eq!(
+            addr,
+            DaemonAddr::NamedPipe {
+                name: Some("netbird".to_owned()),
+                path: r"\\.\pipe\netbird".to_owned(),
+            }
+        );
+        assert_eq!(
+            addr.pipe_dial_path().as_deref(),
+            Some(r"\\.\pipe\ProtectedPrefix\Administrators\netbird")
+        );
+    }
+
+    #[test]
+    fn qualified_npipe_is_used_as_is() {
+        let addr = DaemonAddr::parse(r"npipe://\\.\pipe\custom").unwrap();
+        assert_eq!(addr.pipe_dial_path().as_deref(), Some(r"\\.\pipe\custom"));
+        assert_eq!(addr.display(), r"npipe://\\.\pipe\custom");
+    }
+
+    #[test]
+    fn bare_npipe_display_round_trips() {
+        let addr = DaemonAddr::parse("npipe://netbird").unwrap();
+        assert_eq!(addr.display(), "npipe://netbird");
     }
 
     #[test]
     fn rejects_empty() {
         assert!(DaemonAddr::parse("").is_err());
+        assert!(DaemonAddr::parse("npipe://").is_err());
     }
 }

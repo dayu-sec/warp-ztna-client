@@ -141,7 +141,9 @@ pub(crate) fn state_name(state: ConnectionState) -> &'static str {
 }
 
 fn os_username() -> String {
-    std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default()
+    let (primary, fallback) =
+        if cfg!(windows) { ("USERNAME", "USER") } else { ("USER", "USERNAME") };
+    std::env::var(primary).or_else(|_| std::env::var(fallback)).unwrap_or_default()
 }
 
 async fn connect_client(state: &DesktopState) -> Result<MeshAgentRpc> {

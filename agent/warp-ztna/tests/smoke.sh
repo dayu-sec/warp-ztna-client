@@ -252,6 +252,7 @@ POSTINSTALL="$NODE_DIR/pkg/scripts/postinstall"
 DISTRIBUTION="$NODE_DIR/pkg/Distribution.xml"
 README_HTML="$NODE_DIR/pkg/Readme.html"
 APP_DIR="$NODE_DIR/../warp-ztna-app"
+APP_MAIN="$APP_DIR/src-tauri/src/main.rs"
 DMG_SH="$APP_DIR/build-dmg.sh"
 MACOS_CONF="$APP_DIR/src-tauri/tauri.macos.conf.json"
 APP_INSTALL_SH="$APP_DIR/install-app.sh"
@@ -321,6 +322,8 @@ else
 fi
 expect_in "$arch_out" "dist/client-archives/warp-ztna_${VERSION_FILE}_linux_amd64.tar.gz" "archives dry-run 指向输出目录与六个产物"
 expect_in "$arch_out" "dist/client-archives/warp-ztna_${VERSION_FILE}_windows_amd64.tar.gz" "archives dry-run 覆盖 Windows 组合"
+expect_in "$arch_out" "wintun.dll" "archives dry-run 提示 Windows 归档带 wintun.dll"
+expect_grep "$ARCHIVES_SH" "WINTUN_SHA256" "build-archives.sh 校验 wintun pin"
 
 if pkg_out="$(sh "$MACPKG_SH" --dry-run --arch arm64 --archive x.tar.gz 2>&1)"; then
   ok "build-macpkg.sh --dry-run 退出码 0"
@@ -478,6 +481,8 @@ expect_grep "$PS1_INSTALL" "Assert-ManagementTarget" "install.ps1 入网后复�
 expect_grep "$PS1_INSTALL" "清空本机既有配置" "install.ps1 入网先清空说明"
 expect_grep "$PS1_INSTALL" "入网后校验失败" "install.ps1 复核失败给出原始行"
 expect_grep "$PS1_INSTALL" "先清空本机既有的 NetBird 配置" "install.ps1 usage 反映入网先清空语义"
+expect_grep "$PS1_INSTALL" "wintun.dll" "install.ps1 安装 wintun.dll"
+expect_grep "$PS1_INSTALL" "wintun-LICENSE.txt" "install.ps1 安装 wintun 许可"
 if command -v pwsh >/dev/null 2>&1; then
   if pwsh -NoProfile -Command "\$null = [scriptblock]::Create((Get-Content -Raw '${PS1_INSTALL}'))" >/dev/null 2>&1; then
     ok "install.ps1 解析通过"
@@ -632,6 +637,10 @@ expect_grep "$RELEASE_WF" "github.com/dayu-sec/warp-ztna-client" "发布到公�
 expect_absent "$RELEASE_WF" "warp-ztna-pkg" "不再发布到共享产物仓"
 expect_grep "$RELEASE_WF" "build-assets.sh" "流水线组装 Release 资产"
 expect_grep "$RELEASE_WF" "dry_run" "流水线支持 dry_run 试跑"
+expect_grep "$RELEASE_WF" "WINTUN_VERSION" "流水线按 pin 下载 wintun"
+expect_grep "$RELEASE_WF" "TAURI_WINTUN_DLL" "流水线注入 wintun.dll 路径"
+expect_grep "$RELEASE_WF" "TAURI_WINTUN_LICENSE" "流水线注入 wintun 许可路径"
+expect_grep "$RELEASE_WF" "expected 2 (GUI)" "流水线断言 PE 子系统为 GUI"
 
 SITE_SH="$NODE_DIR/../../deploy/client-pkg/build-assets.sh"
 if sh -n "$SITE_SH"; then
@@ -716,6 +725,9 @@ expect_grep "$WXS" '<DirectoryRef Id="TARGETDIR">' "wxs 显式声明 CommonAppDa
 expect_grep "$WXS" '<Directory Id="CommonAppDataFolder" />' "wxs 声明 CommonAppDataFolder 本身"
 expect_grep "$WXS" 'WarpZtnaStateDir" Guid="177f507c-4e8d-4688-aa6b-d5780beebc82"' "state 目录组件用显式 GUID（目录作 KeyPath 不吃自动 GUID）"
 expect_grep "$WXS" "TAURI_ENGINE_EXE" "wxs 引擎文件来自 CI 传入的绝对路径"
+expect_grep "$WXS" "TAURI_WINTUN_DLL" "wxs 带 wintun.dll"
+expect_grep "$WXS" "TAURI_WINTUN_LICENSE" "wxs 带 wintun 许可"
+expect_grep "$APP_MAIN" 'windows_subsystem = "windows"' "Desktop release 用 GUI 子系统（不弹 cmd）"
 
 MAIN_WXS="$NODE_DIR/../warp-ztna-app/src-tauri/wix/main.wxs"
 expect_grep "$MAIN_WXS" "WarpCleanupForeignState" "MSI 含外域状态清理动作"

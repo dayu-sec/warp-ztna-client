@@ -92,8 +92,10 @@ Linux 是路由节点主平台（内核转发，netbird 自动开 IP forwarding�
   （取件基址 `https://github.com/dayu-sec/warp-ztna-client/releases/download`，路径 `client-v<版本>/<资产名>`；
   `checksums.txt` 覆盖全部资产）。
 - `VERSION` 是本包版本（产物名与门户显示用它）；`NETBIRD_VERSION` 是引擎钉，CI 守齐它与
-  `libs/warp-ztna-nbrpc` 的 `SUPPORTED_NETBIRD_MINOR`。
-- 包内附官方 NetBird 归档里的许可文件（`LICENSE` 与 `LICENSES/` 目录）；再分发须保留其版权与免责声明。
+  `libs/warp-ztna-nbrpc` 的 `SUPPORTED_NETBIRD_MINOR`；`WINTUN_VERSION` / `WINTUN_SHA256` 是 Windows 的
+  `wintun.dll` 钉，构建归档时用 `--wintun-zip` 传入并校验。
+- 包内附官方 NetBird 归档里的许可文件（`LICENSE` 与 `LICENSES/` 目录）；Windows 归档另附
+  `wintun-LICENSE.txt`（Wintun 预编译二进制许可）。再分发须保留其版权与免责声明。
 
 开发入口（仓库根）：`just check-client-scripts`、`just build-client-archives`、`just build-client-macpkg`、
 `just build-client-app-dmg`（后两条只在 macOS 上跑；权威产物由 CI 出）。

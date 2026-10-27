@@ -154,13 +154,75 @@ html[data-theme="light"] .titlebar {
   app-region: no-drag;
 }
 
-/* Native-like caption buttons (Windows / Linux) */
+/* Native-like caption buttons (Linux) */
 .win-controls {
   display: none;
   align-items: stretch;
   height: var(--titlebar-h);
   margin-right: -12px;
   margin-left: 4px;
+}
+
+.traffic-controls {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin-right: 6px;
+}
+
+.traffic-dot {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.traffic-dot.close {
+  background: #ff5f57;
+}
+
+.traffic-dot.min {
+  background: #febc2e;
+}
+
+.traffic-dot.max {
+  background: #28c840;
+}
+
+.traffic-dot::after {
+  opacity: 0;
+}
+
+.traffic-dot.close::after {
+  content: "×";
+}
+
+.traffic-dot.min::after {
+  content: "−";
+}
+
+.traffic-dot.max::after {
+  content: "+";
+}
+
+.traffic-dot.max[data-maximized]::after {
+  content: "−";
+}
+
+.traffic-controls:hover .traffic-dot::after {
+  opacity: 1;
+}
+
+html[data-platform="win"] .traffic-controls {
+  display: flex;
 }
 
 .win-ctrl {
@@ -192,7 +254,6 @@ html[data-platform="mac"] .win-controls {
   display: none;
 }
 
-html[data-platform="win"] .win-controls,
 html[data-platform="linux"] .win-controls {
   display: flex;
 }
@@ -206,7 +267,7 @@ html[data-platform="linux"] .app-shell {
 }
 
 html[data-platform="win"] .titlebar {
-  padding: 0 0 0 14px;
+  padding: 0 12px;
 }
 
 html[data-platform="linux"] .titlebar {

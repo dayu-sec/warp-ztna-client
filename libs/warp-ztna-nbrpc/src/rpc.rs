@@ -558,14 +558,13 @@ async fn connect_channel(addr: &DaemonAddr) -> Result<Channel, MeshAgentRpcError
                     source: Box::new(error),
                 })
         }
-        DaemonAddr::NamedPipe(name) => {
+        DaemonAddr::NamedPipe { .. } => {
             #[cfg(windows)]
             {
-                connect_windows_pipe(name, addr).await
+                connect_windows_pipe(addr).await
             }
             #[cfg(not(windows))]
             {
-                let _ = name;
                 Err(MeshAgentRpcError::InvalidAddress(
                     "npipe addresses are only supported on Windows".to_owned(),
                 ))
@@ -575,9 +574,12 @@ async fn connect_channel(addr: &DaemonAddr) -> Result<Channel, MeshAgentRpcError
 }
 
 #[cfg(windows)]
-async fn connect_windows_pipe(name: &str, addr: &DaemonAddr) -> Result<Channel, MeshAgentRpcError> {
+async fn connect_windows_pipe(addr: &DaemonAddr) -> Result<Channel, MeshAgentRpcError> {
     use std::sync::Arc;
-    let pipe_path = Arc::new(name.to_owned());
+    let Some(pipe_path) = addr.pipe_dial_path() else {
+        return Err(MeshAgentRpcError::InvalidAddress("not a named pipe address".to_owned()));
+    };
+    let pipe_path = Arc::new(pipe_path);
     let display = addr.display();
     Endpoint::try_from("http://[::]:50051")
         .map_err(|error| MeshAgentRpcError::Connect {
@@ -588,13 +590,36 @@ async fn connect_windows_pipe(name: &str, addr: &DaemonAddr) -> Result<Channel, 
         .connect_with_connector(tower::service_fn(move |_| {
             let pipe_path = Arc::clone(&pipe_path);
             async move {
-                let stream = tokio::net::windows::named_pipe::ClientOptions::new()
-                    .open(pipe_path.as_str())?;
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                open_windows_pipe(pipe_path.as_str())
+                    .await
+                    .map(hyper_util::rt::TokioIo::new)
             }
         }))
         .await
         .map_err(|error| MeshAgentRpcError::Connect { addr: display, source: Box::new(error) })
+}
+
+#[cfg(windows)]
+async fn open_windows_pipe(
+    path: &str,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+    const RETRY_BUDGET: Duration = Duration::from_secs(5);
+
+    let deadline = tokio::time::Instant::now() + RETRY_BUDGET;
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(path) {
+            Ok(client) => return Ok(client),
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]

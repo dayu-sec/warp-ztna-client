@@ -219,6 +219,7 @@ function Show-Plan {
     Write-Host "[dry-run] 引擎归档 $ArchiveUrl"
     Write-Host "[dry-run] 校验和 $ChecksumsUrl"
     Write-Host "[dry-run] 安装目录 $InstallDir；状态目录 $StateDir；日志 $LogFile"
+    Write-Host "[dry-run] 引擎归档含 netbird.exe + wintun.dll + wintun-LICENSE.txt"
     Write-Host "[dry-run] （本机有同类组网客户端时：先替换它——停用并移除其服务、命令与桌面应用）"
     if ($EnrollRequested) {
         Write-Host "[dry-run] 入网前先清空本机既有配置（$StateDir），并扫 $LegacyNetbirdDataDir 中外域残留"
@@ -252,25 +253,31 @@ function Install-Engine {
         tar -xzf $archive -C $work
         $binary = Join-Path $work "netbird.exe"
         if (-not (Test-Path $binary)) { Fail "归档里没有 netbird.exe：$archive" }
+        $wintun = Join-Path $work "wintun.dll"
+        if (-not (Test-Path $wintun)) { Fail "归档里没有 wintun.dll：$archive" }
+        $wintunLicense = Join-Path $work "wintun-LICENSE.txt"
+        if (-not (Test-Path $wintunLicense)) { Fail "归档里没有 wintun-LICENSE.txt：$archive" }
+        $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Note "检测到既有 $ServiceName 服务：先停用并注销再重装。"
+            & $EngineBinary service stop --service $ServiceName
+            & $EngineBinary service uninstall --service $ServiceName
+        }
         Copy-Item -Path $binary -Destination (Join-Path $InstallDir "netbird.exe") -Force
+        Copy-Item -Path $wintun -Destination (Join-Path $InstallDir "wintun.dll") -Force
+        Copy-Item -Path $wintunLicense -Destination (Join-Path $InstallDir "wintun-LICENSE.txt") -Force
         $script:EngineBinary = Join-Path $InstallDir "netbird.exe"
+        if ($EnrollRequested) {
+            Switch-ManagementState
+        }
+        Remove-ForeignLegacyConfig
+        & $EngineBinary service install --service $ServiceName --log-file $LogFile --log-level info --service-env "NB_STATE_DIR=$StateDir,NB_ENABLE_LOCAL_FORWARDING=true"
+        if ($LASTEXITCODE -ne 0) { Fail "服务注册失败：netbird service install 退出码 $LASTEXITCODE" }
+        & $EngineBinary service start --service $ServiceName
+        if ($LASTEXITCODE -ne 0) { Fail "服务启动失败：netbird service start 退出码 $LASTEXITCODE" }
     } finally {
         Remove-Item -Path $work -Recurse -Force -ErrorAction SilentlyContinue
     }
-    $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($existing) {
-        Write-Note "检测到既有 $ServiceName 服务：先停用并注销再重装。"
-        & $EngineBinary service stop --service $ServiceName
-        & $EngineBinary service uninstall --service $ServiceName
-    }
-    if ($EnrollRequested) {
-        Switch-ManagementState
-    }
-    Remove-ForeignLegacyConfig
-    & $EngineBinary service install --service $ServiceName --log-file $LogFile --log-level info --service-env "NB_STATE_DIR=$StateDir,NB_ENABLE_LOCAL_FORWARDING=true"
-    if ($LASTEXITCODE -ne 0) { Fail "服务注册失败：netbird service install 退出码 $LASTEXITCODE" }
-    & $EngineBinary service start --service $ServiceName
-    if ($LASTEXITCODE -ne 0) { Fail "服务启动失败：netbird service start 退出码 $LASTEXITCODE" }
 }
 
 function Start-Enroll {

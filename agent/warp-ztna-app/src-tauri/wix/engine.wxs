@@ -12,6 +12,8 @@
         <DirectoryRef Id="INSTALLDIR">
             <Component Id="WarpZtnaEngine" Guid="*" Win64="$(var.Win64)">
                 <File Id="WarpZtnaEngineExe" Source="$(env.TAURI_ENGINE_EXE)" KeyPath="yes" />
+                <File Id="WarpZtnaWintunDll" Source="$(env.TAURI_WINTUN_DLL)" />
+                <File Id="WarpZtnaWintunLicense" Source="$(env.TAURI_WINTUN_LICENSE)" />
                 <ServiceInstall Id="WarpZtnaService"
                                 Name="warp-ztna"
                                 DisplayName="Warp ZTNA Engine"

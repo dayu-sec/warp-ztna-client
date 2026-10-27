@@ -5,19 +5,21 @@ unset CDPATH
 HERE="$(cd -- "$(dirname -- "$0")" && pwd)"
 UPSTREAM=""
 OUT_DIR="$HERE/../../dist/client-archives"
+WINTUN_ZIP=""
 DRY_RUN=0
 
 usage() {
   cat <<'USAGE'
-用法：build-archives.sh --upstream <DIR> [选项]
+用法：build-archives.sh --upstream <DIR> --wintun-zip <FILE> [选项]
 
 选项：
-  --upstream <DIR>   官方 netbird 归档所在目录（netbird_<版本>_<os>_<arch>.tar.gz）
-  --out <DIR>        产物输出目录，默认 dist/client-archives
-  --dry-run          只打印计划，不读写产物
-  --help             显示本帮助
+  --upstream <DIR>    官方 netbird 归档所在目录（netbird_<版本>_<os>_<arch>.tar.gz）
+  --wintun-zip <FILE> wintun 发布 zip（Windows 归档必需；--dry-run 时可不给）
+  --out <DIR>         产物输出目录，默认 dist/client-archives
+  --dry-run           只打印计划，不读写产物
+  --help              显示本帮助
 
-产物：warp-ztna_<包版本>_<os>_<arch>.tar.gz ×4 + checksums.txt
+产物：warp-ztna_<包版本>_<os>_<arch>.tar.gz ×6 + checksums.txt
 USAGE
 }
 
@@ -32,6 +34,11 @@ parse_args() {
       --upstream)
         [ $# -ge 2 ] || die "--upstream 缺少取值"
         UPSTREAM="$2"
+        shift 2
+        ;;
+      --wintun-zip)
+        [ $# -ge 2 ] || die "--wintun-zip 缺少取值"
+        WINTUN_ZIP="$2"
         shift 2
         ;;
       --out)
@@ -66,11 +73,17 @@ sha256_of() {
 
 VERSION="$(tr -d '[:space:]' < "$HERE/VERSION")"
 NETBIRD_VERSION="$(tr -d '[:space:]' < "$HERE/NETBIRD_VERSION")"
+WINTUN_SHA="$(tr -d '[:space:]' < "$HERE/WINTUN_SHA256")"
 
 parse_args "$@"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   [ -d "$UPSTREAM" ] || die "找不到归档目录：$UPSTREAM"
+  [ -n "$WINTUN_ZIP" ] || die "非 dry-run 需要 --wintun-zip（Windows 归档要带 wintun.dll）"
+  [ -f "$WINTUN_ZIP" ] || die "找不到 wintun zip：$WINTUN_ZIP"
+  command -v unzip >/dev/null 2>&1 || die "缺少命令：unzip"
+  wintun_actual="$(sha256_of "$WINTUN_ZIP")"
+  [ "$wintun_actual" = "$WINTUN_SHA" ] || die "wintun zip 校验失败：$WINTUN_ZIP 期望 ${WINTUN_SHA}，实际 $wintun_actual"
   mkdir -p "$OUT_DIR"
 fi
 
@@ -83,6 +96,9 @@ for pair in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 wind
   [ -n "$expected" ] || die "NETBIRD_SHA256 缺少 $pair"
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[dry-run] %s：校验 sha256=%s → %s/%s\n' "$upstream" "$expected" "$OUT_DIR" "$artifact"
+    if [ "$os" = "windows" ]; then
+      printf '[dry-run]   + wintun.dll（sha256=%s）\n' "$WINTUN_SHA"
+    fi
     continue
   fi
   [ -f "$upstream" ] || die "缺少上游归档：$upstream"
@@ -97,7 +113,22 @@ for pair in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 wind
   cp "$HERE/README.md" "$STAGE/README.md"
   chmod 0755 "$STAGE/$bin"
 
-  set -- "$bin" README.md
+  if [ "$os" = "windows" ]; then
+    case "$arch" in
+      amd64) wintun_arch=amd64 ;;
+      arm64) wintun_arch=arm64 ;;
+      *) die "不支持的 Windows 架构：$arch" ;;
+    esac
+    unzip -p "$WINTUN_ZIP" "wintun/bin/$wintun_arch/wintun.dll" > "$STAGE/wintun.dll"
+    [ -s "$STAGE/wintun.dll" ] || die "wintun zip 里没有 wintun/bin/$wintun_arch/wintun.dll"
+    license_entry="$(unzip -Z1 "$WINTUN_ZIP" | awk 'tolower($0) ~ /(^|\/)license\.txt$/ { print; exit }')"
+    [ -n "$license_entry" ] || die "wintun zip 里没有 LICENSE.txt"
+    unzip -p "$WINTUN_ZIP" "$license_entry" > "$STAGE/wintun-LICENSE.txt"
+    [ -s "$STAGE/wintun-LICENSE.txt" ] || die "wintun LICENSE 解包为空"
+    set -- "$bin" wintun.dll wintun-LICENSE.txt README.md
+  else
+    set -- "$bin" README.md
+  fi
   for license in LICENSES LICENSE LICENSE.txt COPYING; do
     if [ -e "$STAGE/$license" ]; then
       set -- "$@" "$license"

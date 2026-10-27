@@ -62,7 +62,7 @@ html[data-native="1"][data-platform="linux"][data-maximized] .app-shell {
 }
 
 html[data-native="1"][data-platform="win"] .titlebar {
-  padding: 0 0 0 12px;
+  padding: 0 12px;
 }
 
 /* Linux CSD: 12px like GNOME/libadwaita */

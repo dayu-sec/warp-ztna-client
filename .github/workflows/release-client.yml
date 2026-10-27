@@ -37,7 +37,17 @@ jobs:
             curl -fsSL -o "dist/netbird-upstream/netbird_${version}_${os}_${arch}.tar.gz" \
               "https://github.com/netbirdio/netbird/releases/download/v${version}/netbird_${version}_${os}_${arch}.tar.gz"
           done
-      - run: sh agent/warp-ztna/build-archives.sh --upstream dist/netbird-upstream --out dist/client-archives
+      - run: |
+          set -eu
+          version="$(tr -d '[:space:]' < agent/warp-ztna/WINTUN_VERSION)"
+          expected="$(tr -d '[:space:]' < agent/warp-ztna/WINTUN_SHA256)"
+          curl -fsSL -o dist/wintun.zip "https://pkgs.netbird.io/wintun/wintun-${version}.zip"
+          actual="$(sha256sum dist/wintun.zip | awk '{print $1}')"
+          if [ "$actual" != "$expected" ]; then
+            echo "wintun zip 校验失败：期望 ${expected}，实际 ${actual}" >&2
+            exit 1
+          fi
+      - run: sh agent/warp-ztna/build-archives.sh --upstream dist/netbird-upstream --wintun-zip dist/wintun.zip --out dist/client-archives
       - run: |
           set -eu
           v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
@@ -138,13 +148,27 @@ jobs:
           mkdir -p build/engine
           tar -xzf "dist/client-archives/warp-ztna_${v}_windows_amd64.tar.gz" -C build/engine
           test -f build/engine/netbird.exe
+          test -f build/engine/wintun.dll
+          test -f build/engine/wintun-LICENSE.txt
           echo "TAURI_ENGINE_EXE=$(cygpath -w "$PWD/build/engine/netbird.exe")" >> "$GITHUB_ENV"
+          echo "TAURI_WINTUN_DLL=$(cygpath -w "$PWD/build/engine/wintun.dll")" >> "$GITHUB_ENV"
+          echo "TAURI_WINTUN_LICENSE=$(cygpath -w "$PWD/build/engine/wintun-LICENSE.txt")" >> "$GITHUB_ENV"
         shell: bash
       - run: |
           set -eu
           cd agent/warp-ztna-app
           pnpm exec tauri build --features custom-protocol --bundles msi
         shell: bash
+      - name: Verify GUI subsystem
+        shell: pwsh
+        run: |
+          $exe = "target/release/warp-ztna-app.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          if ([BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) { throw "not a PE file: $exe" }
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C)
+          if ($subsystem -ne 2) { throw "PE subsystem is $subsystem, expected 2 (GUI)" }
       - run: |
           set -eu
           v="$(tr -d '[:space:]' < agent/warp-ztna/VERSION)"
