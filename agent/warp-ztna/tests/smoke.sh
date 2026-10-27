@@ -255,6 +255,7 @@ APP_DIR="$NODE_DIR/../warp-ztna-app"
 APP_MAIN="$APP_DIR/src-tauri/src/main.rs"
 DMG_SH="$APP_DIR/build-dmg.sh"
 MACOS_CONF="$APP_DIR/src-tauri/tauri.macos.conf.json"
+WINDOWS_CONF="$APP_DIR/src-tauri/tauri.windows.conf.json"
 APP_INSTALL_SH="$APP_DIR/install-app.sh"
 APP_LINUX_INSTALL_SH="$APP_DIR/install-app-linux.sh"
 
@@ -727,6 +728,8 @@ expect_grep "$WXS" 'WarpZtnaStateDir" Guid="177f507c-4e8d-4688-aa6b-d5780beebc82
 expect_grep "$WXS" "TAURI_ENGINE_EXE" "wxs 引擎文件来自 CI 传入的绝对路径"
 expect_grep "$WXS" "TAURI_WINTUN_DLL" "wxs 带 wintun.dll"
 expect_grep "$WXS" "TAURI_WINTUN_LICENSE" "wxs 带 wintun 许可"
+expect_grep "$WXS" 'Id="WarpZtnaWintun"' "wintun 用独立组件（版本化非 keypath 文件不能与引擎同组件）"
+expect_grep "$WINDOWS_CONF" "WarpZtnaWintun" "windows 配置引用 wintun 组件"
 expect_grep "$APP_MAIN" 'windows_subsystem = "windows"' "Desktop release 用 GUI 子系统（不弹 cmd）"
 
 MAIN_WXS="$NODE_DIR/../warp-ztna-app/src-tauri/wix/main.wxs"

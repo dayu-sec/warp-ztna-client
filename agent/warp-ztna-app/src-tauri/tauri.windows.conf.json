@@ -5,7 +5,7 @@
         "upgradeCode": "992378a4-855d-5caf-8a47-f343151f1c2e",
         "template": "wix/main.wxs",
         "fragmentPaths": ["wix/engine.wxs"],
-        "componentRefs": ["WarpZtnaEngine", "WarpZtnaStateDir"]
+        "componentRefs": ["WarpZtnaEngine", "WarpZtnaWintun", "WarpZtnaStateDir"]
       }
     }
   },
