@@ -46,6 +46,8 @@ pub const DEFAULT_ASSET_SYNC_INTERVAL_SECONDS: u64 = 43_200;
 /// Default number of days audit events are kept in the local ledger.
 pub const DEFAULT_AUDIT_RETENTION_DAYS: i64 = 90;
 
+pub const DEFAULT_SYNC_HISTORY_RETENTION_DAYS: i64 = 90;
+
 pub const DEFAULT_ASSET_CENTER_SNAPSHOT_PATH: &str = "/api/v1/ztna/asset-graph/snapshot";
 
 /// Default bind address of the `warp-ztna-ssh-ca` adapter.
@@ -244,6 +246,7 @@ pub struct OrchConfig {
     pub authz_reconcile_interval: Duration,
     pub asset_sync_interval: Duration,
     pub audit_retention_days: i64,
+    pub sync_history_retention_days: i64,
     pub asset_center_base_url: Option<String>,
     pub asset_center_token: Option<SecretString>,
     pub asset_center_snapshot_path: String,
@@ -356,6 +359,10 @@ impl OrchConfig {
             audit_retention_days: parse_positive_seconds(
                 "WARP_AUDIT_RETENTION_DAYS",
                 DEFAULT_AUDIT_RETENTION_DAYS,
+            )?,
+            sync_history_retention_days: parse_positive_seconds(
+                "WARP_SYNC_HISTORY_RETENTION_DAYS",
+                DEFAULT_SYNC_HISTORY_RETENTION_DAYS,
             )?,
             asset_center_base_url: optional("WARP_ASSET_CENTER_BASE_URL"),
             asset_center_token: optional("WARP_ASSET_CENTER_TOKEN").map(SecretString::from),
@@ -1411,6 +1418,37 @@ mod tests {
         for value in ["0", "-1", "not-a-number", "99999999999999999999"] {
             assert!(
                 parse_positive_seconds_value("WARP_AUDIT_RETENTION_DAYS", value).is_err(),
+                "value must be rejected: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_history_retention_days_defaults_to_ninety() {
+        assert_eq!(
+            parse_positive_seconds_value(
+                "WARP_SYNC_HISTORY_RETENTION_DAYS",
+                &DEFAULT_SYNC_HISTORY_RETENTION_DAYS.to_string(),
+            )
+            .expect("default sync history retention days"),
+            90
+        );
+    }
+
+    #[test]
+    fn sync_history_retention_days_accepts_override() {
+        assert_eq!(
+            parse_positive_seconds_value("WARP_SYNC_HISTORY_RETENTION_DAYS", "7")
+                .expect("sync history retention override"),
+            7
+        );
+    }
+
+    #[test]
+    fn sync_history_retention_days_rejects_non_positive_and_invalid_values() {
+        for value in ["0", "-1", "not-a-number", "99999999999999999999"] {
+            assert!(
+                parse_positive_seconds_value("WARP_SYNC_HISTORY_RETENTION_DAYS", value).is_err(),
                 "value must be rejected: {value}"
             );
         }
