@@ -36,7 +36,18 @@ warp-ztna-nbrpc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSMenu", "NSMenuItem", "NSMenuItemBadge", "NSStatusItem", "NSEvent"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSButton",
+    "NSControl",
+    "NSEvent",
+    "NSMenu",
+    "NSMenuItem",
+    "NSMenuItemBadge",
+    "NSResponder",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+] }
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 
 [features]

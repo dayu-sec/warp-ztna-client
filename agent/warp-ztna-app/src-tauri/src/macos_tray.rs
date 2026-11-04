@@ -28,6 +28,25 @@ pub fn apply(tray: &TrayIcon<Wry>, resources: &[TrayResource]) {
     }
 }
 
+pub fn menu_is_open(tray: &TrayIcon<Wry>) -> bool {
+    match tray.with_inner_tray_icon(|tray_icon| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return true;
+        };
+        let Some(status_item) = tray_icon.ns_status_item() else {
+            return false;
+        };
+        status_item.button(mtm).is_some_and(|button| button.isHighlighted())
+            || status_item.menu(mtm).is_some_and(|menu| menu.highlightedItem().is_some())
+    }) {
+        Ok(open) => open,
+        Err(cause) => {
+            log::warn!("tray: menu state check failed: {cause}");
+            true
+        }
+    }
+}
+
 fn expand_menu(menu: &NSMenu, statuses: &[String], mtm: MainThreadMarker) {
     menu.setMinimumWidth(MIN_WIDTH);
     let count = menu.numberOfItems();

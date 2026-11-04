@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -72,6 +74,7 @@ struct DesktopState {
     token_email: Arc<Mutex<Option<String>>>,
     hub: Arc<StatusHub>,
     tray: Arc<std::sync::Mutex<TrayModel>>,
+    tray_apply: Arc<std::sync::Mutex<TrayApplyState>>,
     liveness: Arc<std::sync::Mutex<liveness::LivenessState>>,
     dismissed_expiry: Arc<std::sync::Mutex<Option<i64>>>,
     window_generation: Arc<AtomicU64>,
@@ -1389,7 +1392,33 @@ fn log_file_name(file: &str) -> &str {
     file.rsplit(['/', '\\']).next().unwrap_or(file)
 }
 
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("<non-string panic payload>");
+        match info.location() {
+            Some(location) => log::error!(
+                "panic at {}:{}:{}: {message}",
+                location.file(),
+                location.line(),
+                location.column()
+            ),
+            None => log::error!("panic: {message}"),
+        }
+        previous(info);
+    }));
+}
+
 const TRAY_ID: &str = "main";
+
+const TRAY_RETRY_DELAY: Duration = Duration::from_millis(300);
+
+const TRAY_RETRY_MAX: u32 = 40;
 
 const CLOSE_DESTROY_GRACE: Duration = Duration::from_mins(2);
 
@@ -1762,7 +1791,7 @@ fn set_tray_icon_theme(app: AppHandle, theme: String) -> CmdResult<()> {
     set_tray_icon(&app, &theme)
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Hash, serde::Deserialize)]
 struct TrayMenuLabels {
     open: String,
     request: String,
@@ -1774,7 +1803,7 @@ struct TrayMenuLabels {
     more: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Hash, serde::Deserialize)]
 struct TrayResource {
     label: String,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -1787,6 +1816,33 @@ struct TrayModel {
     more: bool,
     connected: bool,
     api_ok: bool,
+}
+
+#[derive(Debug, Clone, Hash)]
+struct TraySnapshot {
+    labels: TrayMenuLabels,
+    resources: Vec<TrayResource>,
+    more: bool,
+    connected: bool,
+    api_ok: bool,
+}
+
+impl TraySnapshot {
+    fn from_model(model: &TrayModel) -> Self {
+        Self {
+            labels: model.labels.clone(),
+            resources: model.resources.clone(),
+            more: model.more,
+            connected: model.connected,
+            api_ok: model.api_ok,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct TrayApplyState {
+    applied: Option<u64>,
+    pending: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1819,35 +1875,153 @@ impl TrayModel {
     }
 }
 
+fn tray_signature(snapshot: &TraySnapshot) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    snapshot.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn rebuild_tray(app: &AppHandle) {
     let Some(state) = app.try_state::<DesktopState>() else {
         return;
     };
-    let (labels, resources, more, connected, api_ok) = {
+    let (signature, snapshot) = {
         let model = match state.tray.lock() {
             Ok(model) => model,
             Err(poisoned) => poisoned.into_inner(),
         };
-        (model.labels.clone(), model.resources.clone(), model.more, model.connected, model.api_ok)
+        let snapshot = TraySnapshot::from_model(&model);
+        let signature = tray_signature(&snapshot);
+        let mut apply = match state.tray_apply.lock() {
+            Ok(apply) => apply,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if apply.applied == Some(signature) {
+            log::debug!("tray: menu unchanged; skipping rebuild");
+            return;
+        }
+        if apply.pending == Some(signature) {
+            log::debug!("tray: rebuild already pending; coalescing");
+            return;
+        }
+        apply.pending = Some(signature);
+        (signature, snapshot)
     };
+    dispatch_tray_apply(app, signature, snapshot, 0);
+}
+
+fn dispatch_tray_apply(app: &AppHandle, signature: u64, snapshot: TraySnapshot, attempt: u32) {
     let handle = app.clone();
     let result = app.run_on_main_thread(move || {
-        let Some(tray) = handle.tray_by_id(TRAY_ID) else {
-            return;
-        };
-        match tray_menu(&handle, &labels, connected, &resources, more, !api_ok) {
-            Ok(menu) => {
-                if let Err(error) = tray.set_menu(Some(menu)) {
-                    log::warn!("tray: set menu failed: {error}");
-                }
-                #[cfg(target_os = "macos")]
-                macos_tray::apply(&tray, &resources);
-            }
-            Err(error) => log::warn!("tray: build menu failed: {error}"),
-        }
+        apply_tray(&handle, signature, snapshot, attempt);
     });
     if let Err(error) = result {
         log::warn!("tray: dispatch rebuild failed: {error}");
+        clear_tray_pending(app, signature);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tray_menu_is_open(tray: &tauri::tray::TrayIcon<tauri::Wry>) -> bool {
+    macos_tray::menu_is_open(tray)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tray_menu_is_open(_tray: &tauri::tray::TrayIcon<tauri::Wry>) -> bool {
+    false
+}
+
+fn apply_tray(app: &AppHandle, signature: u64, snapshot: TraySnapshot, attempt: u32) {
+    if !tray_apply_current(app, signature) {
+        return;
+    }
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        clear_tray_pending(app, signature);
+        return;
+    };
+    if tray_menu_is_open(&tray) {
+        if attempt >= TRAY_RETRY_MAX {
+            log::warn!("tray: menu stayed open; giving up rebuild after {attempt} attempts");
+            clear_tray_pending(app, signature);
+            return;
+        }
+        if attempt == 0 {
+            log::info!("tray: menu open; deferring rebuild");
+        } else {
+            log::debug!("tray: menu open; deferring rebuild (attempt {attempt})");
+        }
+        retry_tray_apply(app, signature, snapshot, attempt + 1);
+        return;
+    }
+    match tray_menu(
+        app,
+        &snapshot.labels,
+        snapshot.connected,
+        &snapshot.resources,
+        snapshot.more,
+        !snapshot.api_ok,
+    ) {
+        Ok(menu) => {
+            if let Err(error) = tray.set_menu(Some(menu)) {
+                log::warn!("tray: set menu failed: {error}");
+                clear_tray_pending(app, signature);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            macos_tray::apply(&tray, &snapshot.resources);
+            log::info!("tray: menu applied");
+            mark_tray_applied(app, signature);
+        }
+        Err(error) => {
+            log::warn!("tray: build menu failed: {error}");
+            clear_tray_pending(app, signature);
+        }
+    }
+}
+
+fn retry_tray_apply(app: &AppHandle, signature: u64, snapshot: TraySnapshot, attempt: u32) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(TRAY_RETRY_DELAY).await;
+        dispatch_tray_apply(&handle, signature, snapshot, attempt);
+    });
+}
+
+fn tray_apply_current(app: &AppHandle, signature: u64) -> bool {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return false;
+    };
+    let apply = match state.tray_apply.lock() {
+        Ok(apply) => apply,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    apply.pending == Some(signature)
+}
+
+fn clear_tray_pending(app: &AppHandle, signature: u64) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let mut apply = match state.tray_apply.lock() {
+        Ok(apply) => apply,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if apply.pending == Some(signature) {
+        apply.pending = None;
+    }
+}
+
+fn mark_tray_applied(app: &AppHandle, signature: u64) {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let mut apply = match state.tray_apply.lock() {
+        Ok(apply) => apply,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    apply.applied = Some(signature);
+    if apply.pending == Some(signature) {
+        apply.pending = None;
     }
 }
 
@@ -1994,6 +2168,7 @@ const DEFAULT_API_URL: &str = "https://ztna-api.corp.dy-sec.com";
 ///
 /// Panics if the native Tauri runtime cannot be initialized.
 pub fn run() {
+    install_panic_hook();
     let log_builder = logging_plugin_builder();
 
     tauri::Builder::default()
@@ -2040,6 +2215,7 @@ pub fn run() {
                 token_email: Arc::new(Mutex::new(None)),
                 hub: Arc::new(StatusHub::default()),
                 tray: Arc::new(std::sync::Mutex::new(TrayModel::new(&native_prefs.lang))),
+                tray_apply: Arc::new(std::sync::Mutex::new(TrayApplyState::default())),
                 liveness: Arc::new(std::sync::Mutex::new(liveness::LivenessState::default())),
                 dismissed_expiry: Arc::new(std::sync::Mutex::new(None)),
                 window_generation: Arc::new(AtomicU64::new(0)),
@@ -2050,15 +2226,22 @@ pub fn run() {
             });
             log::info!("Warp ZTNA desktop application started (headless={headless})");
 
-            let initial_labels = {
+            let initial_snapshot = {
                 let state = app.state::<DesktopState>();
                 let model = match state.tray.lock() {
                     Ok(model) => model,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                model.labels.clone()
+                TraySnapshot::from_model(&model)
             };
-            let tray_menu = tray_menu(app.handle(), &initial_labels, false, &[], false, false)?;
+            let tray_menu = tray_menu(
+                app.handle(),
+                &initial_snapshot.labels,
+                initial_snapshot.connected,
+                &initial_snapshot.resources,
+                initial_snapshot.more,
+                !initial_snapshot.api_ok,
+            )?;
 
             let tray_icon =
                 Image::from_bytes(initial_tray_icon_bytes(&native_prefs.tray_theme)).ok();
@@ -2077,7 +2260,15 @@ pub fn run() {
             tray_builder.build(app)?;
             #[cfg(target_os = "macos")]
             if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                macos_tray::apply(&tray, &[]);
+                macos_tray::apply(&tray, &initial_snapshot.resources);
+            }
+            {
+                let state = app.state::<DesktopState>();
+                let mut apply = match state.tray_apply.lock() {
+                    Ok(apply) => apply,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                apply.applied = Some(tray_signature(&initial_snapshot));
             }
 
             if !headless {
@@ -2247,6 +2438,64 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tray_test_snapshot() -> TraySnapshot {
+        TraySnapshot {
+            labels: TrayMenuLabels {
+                open: "Open".to_owned(),
+                request: "Request".to_owned(),
+                resources: "Resources".to_owned(),
+                connect: "Connect".to_owned(),
+                disconnect: "Disconnect".to_owned(),
+                settings: "Settings".to_owned(),
+                quit: "Quit".to_owned(),
+                more: "More".to_owned(),
+            },
+            resources: vec![TrayResource {
+                label: "10.0.0.1:22".to_owned(),
+                status: "live".to_owned(),
+            }],
+            more: false,
+            connected: false,
+            api_ok: true,
+        }
+    }
+
+    #[test]
+    fn tray_signature_is_stable_for_equal_content() {
+        assert_eq!(tray_signature(&tray_test_snapshot()), tray_signature(&tray_test_snapshot()));
+    }
+
+    #[test]
+    fn tray_signature_tracks_every_menu_dimension() {
+        let base = tray_test_snapshot();
+
+        let mut changed = base.clone();
+        changed.connected = true;
+        assert_ne!(tray_signature(&base), tray_signature(&changed));
+
+        let mut changed = base.clone();
+        changed.api_ok = false;
+        assert_ne!(tray_signature(&base), tray_signature(&changed));
+
+        let mut changed = base.clone();
+        changed.more = true;
+        assert_ne!(tray_signature(&base), tray_signature(&changed));
+
+        let mut changed = base.clone();
+        changed.labels.open.push('!');
+        assert_ne!(tray_signature(&base), tray_signature(&changed));
+
+        let mut changed = base.clone();
+        changed.resources[0].status.push('!');
+        assert_ne!(tray_signature(&base), tray_signature(&changed));
+
+        let mut changed = base.clone();
+        changed
+            .resources
+            .push(TrayResource { label: "10.0.0.2:22".to_owned(), status: "pending".to_owned() });
+        assert_ne!(tray_signature(&base), tray_signature(&changed));
+    }
 
     #[test]
     fn probe_response_2xx_is_ok_without_detail() {

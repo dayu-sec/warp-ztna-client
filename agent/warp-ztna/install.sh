@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-WARP_VERSION="0.1.19"
+WARP_VERSION="0.1.20"
 NETBIRD_VERSION="0.80.0"
 
 DEFAULT_BASE_URL="https://github.com/dayu-sec/warp-ztna-client/releases/download"
