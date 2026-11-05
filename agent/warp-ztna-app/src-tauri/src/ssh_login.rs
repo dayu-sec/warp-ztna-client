@@ -698,7 +698,23 @@ fn prune_expired_certificates(warp_ssh_dir: &Path) {
     }
 }
 
+fn ssh_config_path(path: &Path, home: &Path) -> String {
+    let raw = if let Ok(rel) = path.strip_prefix(home) {
+        let parts: Vec<_> =
+            rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        format!("~/{}", parts.join("/"))
+    } else {
+        path.to_string_lossy().replace('\\', "/")
+    };
+    if raw.chars().any(char::is_whitespace) {
+        format!("\"{}\"", raw.replace('"', "\\\""))
+    } else {
+        raw
+    }
+}
+
 pub(crate) fn render_managed_ssh_config(
+    home: &Path,
     certs: &[SyncedCertificate],
     hosts: &[ManagedHostEntry],
 ) -> String {
@@ -722,55 +738,36 @@ pub(crate) fn render_managed_ssh_config(
         let _ = writeln!(out, "\nHost {}", host.address);
         let _ = writeln!(out, "    HostName {}", host.address);
         let _ = writeln!(out, "    User {}", host.account);
-        let _ = writeln!(
-            out,
-            "    IdentityFile {}",
-            shell_quote(&first.key_path.to_string_lossy())
-        );
+        let _ = writeln!(out, "    IdentityFile {}", ssh_config_path(&first.key_path, home));
         out.push_str("    IdentitiesOnly yes\n");
         for cert in matching {
             let _ = writeln!(
                 out,
                 "    CertificateFile {}",
-                shell_quote(&cert.certificate_path.to_string_lossy())
-            );
-        }
-    }
-    if let Some(first) = certs.first() {
-        out.push_str("\nHost 10.*\n");
-        out.push_str("    User root\n");
-        let _ = writeln!(
-            out,
-            "    IdentityFile {}",
-            shell_quote(&first.key_path.to_string_lossy())
-        );
-        out.push_str("    IdentitiesOnly yes\n");
-        for cert in certs {
-            let _ = writeln!(
-                out,
-                "    CertificateFile {}",
-                shell_quote(&cert.certificate_path.to_string_lossy())
+                ssh_config_path(&cert.certificate_path, home)
             );
         }
     }
     out
 }
 
-fn ensure_ssh_config_include(ssh_dir: &Path, include_path: &Path) -> Result<(), String> {
+fn ensure_ssh_config_include(ssh_dir: &Path, home: &Path, include_path: &Path) -> Result<(), String> {
     let config_path = ssh_dir.join("config");
-    let include_line = format!("Include {}", shell_quote(&include_path.to_string_lossy()));
+    let portable_include = "Include ~/.ssh/warp-ztna/config";
+    let exact_include = format!("Include {}", ssh_config_path(include_path, home));
+    let raw_include = format!("Include {}", shell_quote(&include_path.to_string_lossy()));
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
     if existing.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed == include_line || trimmed == "Include ~/.ssh/warp-ztna/config"
+        trimmed == portable_include || trimmed == exact_include || trimmed == raw_include
     }) {
         return Ok(());
     }
     ensure_ssh_dir(ssh_dir)?;
     let updated = if existing.is_empty() {
-        format!("{include_line}\n")
+        format!("{portable_include}\n")
     } else {
-        format!("{include_line}\n\n{existing}")
+        format!("{portable_include}\n\n{existing}")
     };
     let mut file = write_options().open(&config_path).map_err(|error| error.to_string())?;
     file.write_all(updated.as_bytes()).map_err(|error| error.to_string())
@@ -796,10 +793,10 @@ pub(crate) fn sync_managed_ssh_config(
         let _ = ensure_known_hosts(&known_hosts_path, line);
     }
     let managed_config_path = warp_dir.join("config");
-    let rendered = render_managed_ssh_config(certs, hosts);
+    let rendered = render_managed_ssh_config(home, certs, hosts);
     let mut file = write_options().open(&managed_config_path).map_err(|error| error.to_string())?;
     file.write_all(rendered.as_bytes()).map_err(|error| error.to_string())?;
-    ensure_ssh_config_include(&ssh_dir, &managed_config_path)
+    ensure_ssh_config_include(&ssh_dir, home, &managed_config_path)
 }
 
 #[cfg(test)]
@@ -1063,7 +1060,8 @@ mod tests {
     }
 
     #[test]
-    fn managed_ssh_config_renders_host_and_fallback_entries() {
+    fn managed_ssh_config_renders_portable_host_entries() {
+        let home = Path::new("/home/dev");
         let certs = vec![SyncedCertificate {
             key_path: PathBuf::from("/home/dev/.ssh/id_work"),
             certificate_path: PathBuf::from("/home/dev/.ssh/warp-ztna/t1-cert.pub"),
@@ -1075,9 +1073,9 @@ mod tests {
             account: "root".to_owned(),
             host_principal: "warp:host:h1".to_owned(),
         }];
-        let rendered = render_managed_ssh_config(&certs, &hosts);
+        let rendered = render_managed_ssh_config(home, &certs, &hosts);
         assert!(rendered.contains("Host 10.98.0.91\n"));
-        assert!(rendered.contains("CertificateFile /home/dev/.ssh/warp-ztna/t1-cert.pub\n"));
-        assert!(rendered.contains("Host 10.*\n"));
+        assert!(rendered.contains("IdentityFile ~/.ssh/id_work\n"));
+        assert!(rendered.contains("CertificateFile ~/.ssh/warp-ztna/t1-cert.pub\n"));
     }
 }

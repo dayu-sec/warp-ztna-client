@@ -918,10 +918,26 @@ fn update_tray_resources(app: &AppHandle, payload: &serde_json::Value, lang: &st
     tauri::async_runtime::spawn(async move {
         liveness::update_rows(&handle, liveness_rows).await;
     });
+    let has_pending_ssh = payload
+        .get("requests")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|requests| {
+            requests.iter().any(|req| {
+                req.get("grant_refs")
+                    .and_then(|refs| refs.get("ssh_ca"))
+                    .and_then(|ca| ca.get("status"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("pending")
+            })
+        });
     let ssh_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(error) = sync_ssh_client_config(&ssh_handle).await {
             log::debug!("ssh_config_sync: skipped or failed: {}", error.message);
+        }
+        if has_pending_ssh {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let _ = sync_ssh_client_config(&ssh_handle).await;
         }
     });
 }
