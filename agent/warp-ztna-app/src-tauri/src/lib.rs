@@ -2332,6 +2332,34 @@ fn restart_app(app: AppHandle) {
 const DEFAULT_PORTAL_URL: &str = "https://ztna-portal.corp.dy-sec.com";
 const DEFAULT_API_URL: &str = "https://ztna-api.corp.dy-sec.com";
 
+static INSTANCE_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+fn acquire_instance_lock(config_dir: Option<&std::path::Path>) -> bool {
+    let lock_path = config_dir.map_or_else(
+        || std::env::temp_dir().join("warp-ztna-app.instance.lock"),
+        |dir| {
+            let _ = std::fs::create_dir_all(dir);
+            dir.join("instance.lock")
+        },
+    );
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+    else {
+        return true;
+    };
+    for _ in 0..15 {
+        if file.try_lock().is_ok() {
+            let _ = INSTANCE_LOCK.set(file);
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::too_many_lines)]
 /// Starts the desktop application event loop.
@@ -2350,6 +2378,10 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let config_dir = app.path().app_config_dir().ok();
+            if !acquire_instance_lock(config_dir.as_deref()) {
+                log::info!("Warp ZTNA is already running; exiting duplicate instance");
+                std::process::exit(0);
+            }
             let reopen_once = config_dir.as_deref().is_some_and(|dir| {
                 let marker = dir.join(REOPEN_MARKER);
                 let exists = marker.exists();
@@ -2489,6 +2521,20 @@ pub fn run() {
                             });
                         }
                     }
+                }
+            });
+
+            let mut routes_rx = state.hub.subscribe_routes();
+            let route_ssh_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while routes_rx.changed().await.is_ok() {
+                    let count = routes_rx.borrow_and_update().len();
+                    log::info!(
+                        "ssh_config_sync: routes changed (count={count}), triggering background SSH sync"
+                    );
+                    let _ = sync_ssh_client_config(&route_ssh_handle).await;
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                    let _ = sync_ssh_client_config(&route_ssh_handle).await;
                 }
             });
 

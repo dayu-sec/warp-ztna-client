@@ -108,24 +108,44 @@ pub(crate) struct StatusHub {
     latest: Mutex<Option<StatusDto>>,
     routes: Mutex<RouteCache>,
     connected_tx: watch::Sender<bool>,
+    routes_tx: watch::Sender<Vec<String>>,
 }
 
 impl Default for StatusHub {
     fn default() -> Self {
         let (connected_tx, _) = watch::channel(false);
-        Self { latest: Mutex::new(None), routes: Mutex::new(RouteCache::default()), connected_tx }
+        let (routes_tx, _) = watch::channel(Vec::new());
+        Self {
+            latest: Mutex::new(None),
+            routes: Mutex::new(RouteCache::default()),
+            connected_tx,
+            routes_tx,
+        }
     }
 }
 
 impl StatusHub {
     pub(crate) async fn publish(&self, dto: StatusDto) {
         let connected = dto.state == "connected";
+        let routes = dto.routes.clone();
         *self.latest.lock().await = Some(dto);
         let _ = self.connected_tx.send(connected);
+        self.routes_tx.send_if_modified(|current| {
+            if *current == routes {
+                false
+            } else {
+                *current = routes;
+                true
+            }
+        });
     }
 
     pub(crate) fn subscribe_connected(&self) -> watch::Receiver<bool> {
         self.connected_tx.subscribe()
+    }
+
+    pub(crate) fn subscribe_routes(&self) -> watch::Receiver<Vec<String>> {
+        self.routes_tx.subscribe()
     }
 
     pub(crate) async fn cached_if_live(&self) -> Option<StatusDto> {
@@ -411,5 +431,24 @@ mod tests {
 
         let escalated = hub.republish(StreamHealth::Reconnecting, Some("error")).await;
         assert_eq!(escalated.state, "error");
+    }
+
+    #[tokio::test]
+    async fn subscribe_routes_notifies_only_when_routes_change() {
+        let hub = StatusHub::default();
+        let mut rx = hub.subscribe_routes();
+        assert!(!rx.has_changed().unwrap_or(true));
+
+        let mut dto = StatusDto::disconnected(StreamHealth::Live);
+        hub.publish(dto.clone()).await;
+        assert!(!rx.has_changed().unwrap_or(true), "publishing identical empty routes does not fire");
+
+        dto.routes = vec!["10.168.0.12/32".to_owned()];
+        hub.publish(dto.clone()).await;
+        assert!(rx.has_changed().unwrap_or(false));
+        assert_eq!(*rx.borrow_and_update(), vec!["10.168.0.12/32".to_owned()]);
+
+        hub.publish(dto).await;
+        assert!(!rx.has_changed().unwrap_or(true), "repeating identical routes does not fire");
     }
 }
