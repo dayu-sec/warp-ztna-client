@@ -41,14 +41,10 @@ pub const DEFAULT_AUTHZ_RECONCILE_INTERVAL_SECONDS: u64 = 900;
 /// Default timeout for one API-to-orch authorization execution.
 pub const DEFAULT_AUTHZ_REQUEST_TIMEOUT_SECONDS: u64 = 120;
 
-pub const DEFAULT_ASSET_SYNC_INTERVAL_SECONDS: u64 = 43_200;
-
 /// Default number of days audit events are kept in the local ledger.
 pub const DEFAULT_AUDIT_RETENTION_DAYS: i64 = 90;
 
 pub const DEFAULT_SYNC_HISTORY_RETENTION_DAYS: i64 = 90;
-
-pub const DEFAULT_ASSET_CENTER_SNAPSHOT_PATH: &str = "/api/v1/ztna/asset-graph/snapshot";
 
 /// Default bind address of the `warp-ztna-ssh-ca` adapter.
 pub const DEFAULT_SSH_CA_BIND_ADDR: &str = "127.0.0.1:8091";
@@ -244,12 +240,8 @@ pub struct OrchConfig {
     pub ssh_host_cert_ttl_seconds: i64,
     pub ssh_manual_cert_max_ttl_seconds: i64,
     pub authz_reconcile_interval: Duration,
-    pub asset_sync_interval: Duration,
     pub audit_retention_days: i64,
     pub sync_history_retention_days: i64,
-    pub asset_center_base_url: Option<String>,
-    pub asset_center_token: Option<SecretString>,
-    pub asset_center_snapshot_path: String,
     pub authz_request_timeout: Duration,
     pub ssh_ca_base_url: String,
     pub ssh_ca_request_timeout: Duration,
@@ -352,10 +344,6 @@ impl OrchConfig {
                 "WARP_AUTHZ_RECONCILE_INTERVAL_SECONDS",
                 DEFAULT_AUTHZ_RECONCILE_INTERVAL_SECONDS,
             )?,
-            asset_sync_interval: parse_duration(
-                "WARP_ASSET_SYNC_INTERVAL_SECONDS",
-                DEFAULT_ASSET_SYNC_INTERVAL_SECONDS,
-            )?,
             audit_retention_days: parse_positive_seconds(
                 "WARP_AUDIT_RETENTION_DAYS",
                 DEFAULT_AUDIT_RETENTION_DAYS,
@@ -364,12 +352,6 @@ impl OrchConfig {
                 "WARP_SYNC_HISTORY_RETENTION_DAYS",
                 DEFAULT_SYNC_HISTORY_RETENTION_DAYS,
             )?,
-            asset_center_base_url: optional("WARP_ASSET_CENTER_BASE_URL"),
-            asset_center_token: optional("WARP_ASSET_CENTER_TOKEN").map(SecretString::from),
-            asset_center_snapshot_path: value(
-                "WARP_ASSET_CENTER_SNAPSHOT_PATH",
-                DEFAULT_ASSET_CENTER_SNAPSHOT_PATH,
-            ),
             authz_request_timeout: parse_duration(
                 "WARP_AUTHZ_REQUEST_TIMEOUT_SECONDS",
                 DEFAULT_AUTHZ_REQUEST_TIMEOUT_SECONDS,
@@ -1320,45 +1302,6 @@ mod tests {
         for value in ["0", "-1", "not-a-number", "18446744073709551616"] {
             assert!(
                 parse_duration_value("WARP_AUDIT_POLL_INTERVAL_SECONDS", value).is_err(),
-                "value must be rejected: {value}"
-            );
-        }
-    }
-
-    #[test]
-    fn asset_center_snapshot_path_defaults_to_the_reference_endpoint() {
-        assert_eq!(
-            value("WARP_ASSET_CENTER_SNAPSHOT_PATH", DEFAULT_ASSET_CENTER_SNAPSHOT_PATH),
-            "/api/v1/ztna/asset-graph/snapshot"
-        );
-    }
-
-    #[test]
-    fn asset_sync_interval_defaults_to_twelve_hours() {
-        assert_eq!(
-            parse_duration_value(
-                "WARP_ASSET_SYNC_INTERVAL_SECONDS",
-                &DEFAULT_ASSET_SYNC_INTERVAL_SECONDS.to_string(),
-            )
-            .expect("default asset sync interval"),
-            Duration::from_hours(12)
-        );
-    }
-
-    #[test]
-    fn asset_sync_interval_accepts_override() {
-        assert_eq!(
-            parse_duration_value("WARP_ASSET_SYNC_INTERVAL_SECONDS", "60")
-                .expect("asset sync interval override"),
-            Duration::from_mins(1)
-        );
-    }
-
-    #[test]
-    fn asset_sync_interval_rejects_non_positive_and_invalid_values() {
-        for value in ["0", "-1", "not-a-number", "18446744073709551616"] {
-            assert!(
-                parse_duration_value("WARP_ASSET_SYNC_INTERVAL_SECONDS", value).is_err(),
                 "value must be rejected: {value}"
             );
         }
