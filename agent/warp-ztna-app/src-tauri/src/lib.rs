@@ -918,6 +918,162 @@ fn update_tray_resources(app: &AppHandle, payload: &serde_json::Value, lang: &st
     tauri::async_runtime::spawn(async move {
         liveness::update_rows(&handle, liveness_rows).await;
     });
+    let ssh_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = sync_ssh_client_config(&ssh_handle).await {
+            log::debug!("ssh_config_sync: skipped or failed: {}", error.message);
+        }
+    });
+}
+
+#[allow(clippy::too_many_lines)]
+async fn sync_ssh_client_config(app: &AppHandle) -> CmdResult<()> {
+    let Some(state) = app.try_state::<DesktopState>() else {
+        return Ok(());
+    };
+    let Some(token) = resource_token(state.inner()).await else {
+        return Ok(());
+    };
+    let base = state.api_base_url.clone();
+    let (certificates, config) = tokio::join!(
+        api_get(
+            &state.http,
+            &base,
+            "api/v1/me/ssh-certificates",
+            &token,
+            "fetch ssh certificates"
+        ),
+        api_get(
+            &state.http,
+            &base,
+            "api/v1/me/ssh-client-config",
+            &token,
+            "fetch ssh client config"
+        ),
+    );
+    let certificates = certificates?;
+    let config = config?;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| CommandError::coded(SSH_NO_LOCAL_KEY_CODE, error.to_string()))?;
+    let installed_keys = {
+        let home = home.clone();
+        tauri::async_runtime::spawn_blocking(move || ssh_login::resolve_installed_keys(&home))
+            .await
+            .unwrap_or_default()
+    };
+    if installed_keys.is_empty() {
+        return Ok(());
+    }
+    let mut synced_certs = Vec::new();
+    if let Some(items) = certificates.as_array() {
+        for item in items {
+            if item.get("status").and_then(serde_json::Value::as_str) != Some("issued") {
+                continue;
+            }
+            let Some(request_id) =
+                item.get("access_request_id").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(fingerprint) =
+                item.get("public_key_fingerprint").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some((_, key_path)) = installed_keys.iter().find(|(fp, _)| fp == fingerprint)
+            else {
+                continue;
+            };
+            let Some(cert_path) = ssh_login::ticket_certificate_path(&home, request_id) else {
+                continue;
+            };
+            let serial = item.get("serial").and_then(serde_json::Value::as_str).map(ToOwned::to_owned);
+            let on_disk = {
+                let cert_path = cert_path.clone();
+                let serial = serial.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    ssh_login::existing_certificate(&cert_path, serial.as_deref())
+                })
+                .await
+                .ok()
+                .flatten()
+            };
+            let (text, new_text) = if let Some(text) = on_disk {
+                (text, None)
+            } else {
+                let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Ok(downloaded) = api_get(
+                    &state.http,
+                    &base,
+                    &format!("api/v1/me/ssh-certificates/{id}/download"),
+                    &token,
+                    "download ssh certificate",
+                )
+                .await
+                else {
+                    continue;
+                };
+                let Some(text) = downloaded
+                    .get("certificate")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                else {
+                    continue;
+                };
+                if !ssh_login::certificate_is_current(&text) {
+                    continue;
+                }
+                (text.clone(), Some(text))
+            };
+            let principals = ssh_login::certificate_principals(&text).unwrap_or_default();
+            synced_certs.push(ssh_login::SyncedCertificate {
+                key_path: key_path.clone(),
+                certificate_path: cert_path,
+                principals,
+                new_text,
+            });
+        }
+    }
+    let mut managed_hosts = Vec::new();
+    if let Some(hosts) = config.get("hosts").and_then(serde_json::Value::as_array) {
+        for host in hosts {
+            let Some(address) = host.get("address").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(account) = host.get("login_account").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let address = address_key(address);
+            let host_principal = host
+                .get("host_principal")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(account)
+                .to_owned();
+            managed_hosts.push(ssh_login::ManagedHostEntry {
+                address,
+                account: account.to_owned(),
+                host_principal,
+            });
+        }
+    }
+    let known_hosts_line =
+        config.get("known_hosts").and_then(serde_json::Value::as_str).map(ToOwned::to_owned);
+    tauri::async_runtime::spawn_blocking(move || {
+        ssh_login::sync_managed_ssh_config(
+            &home,
+            known_hosts_line.as_deref(),
+            &synced_certs,
+            &managed_hosts,
+        )
+    })
+    .await
+    .map_err(|error| CommandError::coded(Reason::Internal.code(), error.to_string()))?
+    .map_err(|error| CommandError::coded(Reason::Internal.code(), error))?;
+    Ok(())
 }
 
 async fn resource_token(state: &DesktopState) -> Option<String> {

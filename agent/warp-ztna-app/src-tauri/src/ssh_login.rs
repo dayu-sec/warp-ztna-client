@@ -110,6 +110,21 @@ pub(crate) struct LaunchRequest {
     pub(crate) known_hosts_line: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SyncedCertificate {
+    pub(crate) key_path: PathBuf,
+    pub(crate) certificate_path: PathBuf,
+    pub(crate) principals: Vec<String>,
+    pub(crate) new_text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedHostEntry {
+    pub(crate) address: String,
+    pub(crate) account: String,
+    pub(crate) host_principal: String,
+}
+
 struct PreparedLaunch {
     certificate_path: PathBuf,
     tokens: Vec<String>,
@@ -652,6 +667,141 @@ pub(crate) fn launch(request: &LaunchRequest) -> CmdResult<SshLaunchDto> {
     })
 }
 
+pub(crate) fn resolve_installed_keys(home: &Path) -> Vec<(String, PathBuf)> {
+    let scanned = scanned_public_key_paths(&home.join(".ssh"));
+    let mut result = Vec::new();
+    for key_path in scanned {
+        if let Some(fp) = fingerprint_of(&key_path) {
+            result.push((fp, key_path));
+        }
+    }
+    result
+}
+
+fn prune_expired_certificates(warp_ssh_dir: &Path) {
+    let Ok(entries) = fs::read_dir(warp_ssh_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+            continue;
+        };
+        if !name.ends_with("-cert.pub") {
+            continue;
+        }
+        if let Ok(text) = fs::read_to_string(&path)
+            && !certificate_is_current(&text)
+        {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+pub(crate) fn render_managed_ssh_config(
+    certs: &[SyncedCertificate],
+    hosts: &[ManagedHostEntry],
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("# Managed by Warp ZTNA. DO NOT EDIT.\n");
+    for host in hosts {
+        if !valid_host(&host.address) || !valid_account(&host.account) {
+            continue;
+        }
+        let matching: Vec<&SyncedCertificate> = certs
+            .iter()
+            .filter(|cert| {
+                cert.principals
+                    .iter()
+                    .any(|p| p == &host.host_principal || p == &host.account)
+            })
+            .collect();
+        let Some(first) = matching.first() else {
+            continue;
+        };
+        let _ = writeln!(out, "\nHost {}", host.address);
+        let _ = writeln!(out, "    HostName {}", host.address);
+        let _ = writeln!(out, "    User {}", host.account);
+        let _ = writeln!(
+            out,
+            "    IdentityFile {}",
+            shell_quote(&first.key_path.to_string_lossy())
+        );
+        out.push_str("    IdentitiesOnly yes\n");
+        for cert in matching {
+            let _ = writeln!(
+                out,
+                "    CertificateFile {}",
+                shell_quote(&cert.certificate_path.to_string_lossy())
+            );
+        }
+    }
+    if let Some(first) = certs.first() {
+        out.push_str("\nHost 10.*\n");
+        out.push_str("    User root\n");
+        let _ = writeln!(
+            out,
+            "    IdentityFile {}",
+            shell_quote(&first.key_path.to_string_lossy())
+        );
+        out.push_str("    IdentitiesOnly yes\n");
+        for cert in certs {
+            let _ = writeln!(
+                out,
+                "    CertificateFile {}",
+                shell_quote(&cert.certificate_path.to_string_lossy())
+            );
+        }
+    }
+    out
+}
+
+fn ensure_ssh_config_include(ssh_dir: &Path, include_path: &Path) -> Result<(), String> {
+    let config_path = ssh_dir.join("config");
+    let include_line = format!("Include {}", shell_quote(&include_path.to_string_lossy()));
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    if existing.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == include_line || trimmed == "Include ~/.ssh/warp-ztna/config"
+    }) {
+        return Ok(());
+    }
+    ensure_ssh_dir(ssh_dir)?;
+    let updated = if existing.is_empty() {
+        format!("{include_line}\n")
+    } else {
+        format!("{include_line}\n\n{existing}")
+    };
+    let mut file = write_options().open(&config_path).map_err(|error| error.to_string())?;
+    file.write_all(updated.as_bytes()).map_err(|error| error.to_string())
+}
+
+pub(crate) fn sync_managed_ssh_config(
+    home: &Path,
+    known_hosts_line: Option<&str>,
+    certs: &[SyncedCertificate],
+    hosts: &[ManagedHostEntry],
+) -> Result<(), String> {
+    let ssh_dir = home.join(".ssh");
+    let warp_dir = ssh_dir.join("warp-ztna");
+    ensure_ssh_dir(&warp_dir)?;
+    for cert in certs {
+        if let Some(text) = &cert.new_text {
+            write_certificate(&cert.certificate_path, text)?;
+        }
+    }
+    prune_expired_certificates(&warp_dir);
+    if let Some(line) = known_hosts_line.filter(|line| !line.trim().is_empty()) {
+        let known_hosts_path = ssh_dir.join("known_hosts");
+        let _ = ensure_known_hosts(&known_hosts_path, line);
+    }
+    let managed_config_path = warp_dir.join("config");
+    let rendered = render_managed_ssh_config(certs, hosts);
+    let mut file = write_options().open(&managed_config_path).map_err(|error| error.to_string())?;
+    file.write_all(rendered.as_bytes()).map_err(|error| error.to_string())?;
+    ensure_ssh_config_include(&ssh_dir, &managed_config_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,5 +1060,24 @@ mod tests {
         let (_, _, appended) =
             known_hosts_append("", "@cert-authority * ecdsa-sha2-nistp256 AAAAKEY").unwrap();
         assert_eq!(appended, "@cert-authority * ecdsa-sha2-nistp256 AAAAKEY\n");
+    }
+
+    #[test]
+    fn managed_ssh_config_renders_host_and_fallback_entries() {
+        let certs = vec![SyncedCertificate {
+            key_path: PathBuf::from("/home/dev/.ssh/id_work"),
+            certificate_path: PathBuf::from("/home/dev/.ssh/warp-ztna/t1-cert.pub"),
+            principals: vec!["warp:host:h1".to_owned()],
+            new_text: None,
+        }];
+        let hosts = vec![ManagedHostEntry {
+            address: "10.98.0.91".to_owned(),
+            account: "root".to_owned(),
+            host_principal: "warp:host:h1".to_owned(),
+        }];
+        let rendered = render_managed_ssh_config(&certs, &hosts);
+        assert!(rendered.contains("Host 10.98.0.91\n"));
+        assert!(rendered.contains("CertificateFile /home/dev/.ssh/warp-ztna/t1-cert.pub\n"));
+        assert!(rendered.contains("Host 10.*\n"));
     }
 }
