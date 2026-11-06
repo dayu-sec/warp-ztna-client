@@ -269,7 +269,18 @@ fn open_sso_browser(verification_uri: &str, verification_uri_complete: &str) -> 
 }
 
 async fn login_outcome(client: &mut MeshAgentRpc) -> CmdResult<SsoStartDto> {
-    let active = client.get_active_profile().await.ok();
+    let mut active = client.get_active_profile().await.ok();
+    if active.is_none() {
+        let user = os_username();
+        if let Ok(profiles) = client.list_profiles(&user).await
+            && profiles.len() == 1
+        {
+            let profile = &profiles[0];
+            if client.switch_profile(&user, &profile.id).await.is_ok() {
+                active = client.get_active_profile().await.ok();
+            }
+        }
+    }
     let url = resolve_management_url(client, active.as_ref()).await;
     let username = active
         .as_ref()

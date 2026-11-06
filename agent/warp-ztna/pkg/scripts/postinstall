@@ -70,6 +70,44 @@ profile_config_host() {
   normalize_host "$profile_host"
 }
 
+profile_file_in_root() {
+  root="$1"
+  active_id="$(sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' "$root/active_profile.json" 2>/dev/null | head -n 1)"
+  if [ -z "$active_id" ] || [ "$active_id" = "default" ]; then
+    [ -f "$root/default.json" ] && printf '%s\n' "$root/default.json"
+    return 0
+  fi
+  find "$root" -name "${active_id}.json" -type f 2>/dev/null | head -n 1
+}
+
+adopt_legacy_state() {
+  [ "$ENROLL_READY" -eq 0 ] || return 0
+  if [ -n "$ACTIVE_FILE" ] && [ -f "$ACTIVE_FILE" ]; then
+    return 0
+  fi
+  for root in ${LEGACY_STATE_ROOTS:-/var/lib/netbird /etc/netbird}; do
+    [ -d "$root" ] || continue
+    candidate="$(profile_file_in_root "$root")"
+    if [ -z "$candidate" ] && [ -f "$root/config.json" ]; then
+      candidate="$root/config.json"
+    fi
+    [ -n "$candidate" ] || continue
+    [ -f "$candidate" ] || continue
+    host="$(profile_config_host "$candidate" || true)"
+    [ "$host" = "$DEFAULT_MANAGEMENT_HOST" ] || continue
+    cp -Rp "$root"/. "$STATE_DIR"/
+    if [ "$(basename "$candidate")" = "config.json" ] && [ ! -f "$STATE_DIR/default.json" ]; then
+      cp -p "$candidate" "$STATE_DIR/default.json"
+    fi
+    chown -R "${STATE_OWNER:-root:wheel}" "$STATE_DIR"
+    chmod 0700 "$STATE_DIR"
+    echo "Warp ZTNA：接管旧 NetBird 配置（${root} → ${STATE_DIR}）。"
+    ACTIVE_FILE="$(profile_file_in_root "$STATE_DIR")"
+    ACTIVE_HOST="$(profile_config_host "$ACTIVE_FILE" || true)"
+    return 0
+  done
+}
+
 remove_foreign_profile_files() {
   for root in "$STATE_DIR" /etc/netbird /var/lib/netbird; do
     [ -d "$root" ] || continue
@@ -97,6 +135,8 @@ ACTIVE_HOST=""
 if [ -n "$ACTIVE_FILE" ] && [ -f "$ACTIVE_FILE" ]; then
   ACTIVE_HOST="$(profile_config_host "$ACTIVE_FILE" || true)"
 fi
+
+adopt_legacy_state
 
 if [ "$ENROLL_READY" -eq 1 ]; then
   if [ -n "$ACTIVE_HOST" ]; then

@@ -774,5 +774,19 @@ for f in "$INSTALL_SH" "$APP_INSTALL_SH" "$APP_LINUX_INSTALL_SH"; do
 done
 expect_grep "$PS1_INSTALL" "Get-RemoteFile" "install.ps1 的下载走重试封装"
 
+STATE_MIGRATION_TEST="$HERE/state-migration.sh"
+STATE_MIGRATION_LOG="$(mktemp)"
+if [ -f "$STATE_MIGRATION_TEST" ]; then
+  if sh "$STATE_MIGRATION_TEST" > "$STATE_MIGRATION_LOG" 2>&1; then
+    ok "旧 NetBird state/profile 接管逻辑通过"
+  else
+    bad "旧 NetBird state/profile 接管逻辑失败"
+    tail -n 20 "$STATE_MIGRATION_LOG" >&2 || true
+  fi
+else
+  bad "缺少 state-migration.sh"
+fi
+rm -f "$STATE_MIGRATION_LOG"
+
 printf '\n%s 项，%s 失败\n' "$TOTAL" "$FAILED"
 [ "$FAILED" -eq 0 ]

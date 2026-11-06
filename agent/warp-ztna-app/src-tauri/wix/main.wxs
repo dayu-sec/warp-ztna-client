@@ -419,7 +419,7 @@ End If
 
         <CustomAction Id="WarpCleanupForeignState" Script="vbscript" Execute="deferred" Impersonate="no" Return="ignore">
             <![CDATA[
-Dim shell, fso, wmi, svcs, svc, logFile, q, stateDir, legacyDir, activeFile, defaultHost, clearAll
+Dim shell, fso, wmi, svcs, svc, logFile, q, stateDir, legacyDir, activeFile, legacyActive, defaultHost, clearAll
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 On Error Resume Next
@@ -434,6 +434,16 @@ legacyDir = shell.ExpandEnvironmentStrings("%ProgramData%") & "\Netbird"
 defaultHost = NormHost("https://ztna.corp.dy-sec.com:443")
 Set logFile = fso.OpenTextFile(shell.ExpandEnvironmentStrings("%TEMP%") & "\warp-ztna-install-cleanup.log", 8, True)
 logFile.WriteLine "warp-ztna state cleanup start"
+legacyActive = FindActiveFileIn(legacyDir)
+If FindActiveFile() = "" And legacyActive <> "" Then
+  If HostOfFile(legacyActive) = defaultHost Then
+    If Not fso.FolderExists(stateDir) Then fso.CreateFolder stateDir
+    If fso.FolderExists(legacyDir) Then
+      shell.Run "cmd /c xcopy /E /I /H /Y " & q & legacyDir & "\*" & q & " " & q & stateDir & q, 0, True
+      logFile.WriteLine "adopted legacy state from " & legacyDir
+    End If
+  End If
+End If
 activeFile = FindActiveFile()
 clearAll = False
 If activeFile <> "" Then
@@ -497,11 +507,15 @@ Function HostOfFile(path)
 End Function
 
 Function FindActiveFile()
+  FindActiveFile = FindActiveFileIn(stateDir)
+End Function
+
+Function FindActiveFileIn(rootPath)
   Dim ts, content, re, matches, id
-  FindActiveFile = ""
+  FindActiveFileIn = ""
   id = ""
-  If fso.FileExists(stateDir & "\active_profile.json") Then
-    Set ts = fso.OpenTextFile(stateDir & "\active_profile.json", 1, False, 0)
+  If fso.FileExists(rootPath & "\active_profile.json") Then
+    Set ts = fso.OpenTextFile(rootPath & "\active_profile.json", 1, False, 0)
     content = ts.ReadAll
     ts.Close
     Set re = New RegExp
@@ -510,10 +524,10 @@ Function FindActiveFile()
     If matches.Count > 0 Then id = matches(0).SubMatches(0)
   End If
   If id = "" Or LCase(id) = "default" Then
-    FindActiveFile = stateDir & "\default.json"
+    FindActiveFileIn = rootPath & "\default.json"
     Exit Function
   End If
-  FindActiveFile = FindFileByName(stateDir, id & ".json")
+  FindActiveFileIn = FindFileByName(rootPath, id & ".json")
 End Function
 
 Function FindFileByName(rootPath, fileName)

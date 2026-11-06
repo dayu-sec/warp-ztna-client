@@ -199,21 +199,64 @@ fn iterm_script(command: &str) -> String {
 }
 
 fn parse_identity_files(output: &str, home: &Path) -> Vec<PathBuf> {
-    let mut identities = Vec::new();
+    parse_path_directives(output, "identityfile", home)
+}
+
+fn parse_path_directives(output: &str, directive: &str, home: &Path) -> Vec<PathBuf> {
+    let prefix = format!("{directive} ");
+    let mut paths = Vec::new();
     for line in output.lines() {
-        let Some(value) = line.trim().strip_prefix("identityfile ") else {
+        let Some(value) = line.trim().strip_prefix(&prefix) else {
             continue;
         };
         let value = value.trim();
         if value.is_empty() || value.eq_ignore_ascii_case("none") {
             continue;
         }
-        let path = expand_home(value, home);
-        if !identities.contains(&path) {
-            identities.push(path);
+        let path = expand_home(value.trim_matches('"'), home);
+        if !paths.contains(&path) {
+            paths.push(path);
         }
     }
-    identities
+    paths
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    let normalize = |path: &Path| {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned()
+    };
+    let left = normalize(left);
+    let right = normalize(right);
+    if cfg!(windows) { left.eq_ignore_ascii_case(&right) } else { left == right }
+}
+
+fn config_ready_from_output(
+    output: &str,
+    home: &Path,
+    key_path: &Path,
+    certificate_path: &Path,
+) -> bool {
+    parse_identity_files(output, home).iter().any(|path| same_file(path, key_path))
+        && parse_path_directives(output, "certificatefile", home)
+            .iter()
+            .any(|path| same_file(path, certificate_path))
+}
+
+fn managed_config_ready(
+    home: &Path,
+    account: &str,
+    host: &str,
+    key_path: &Path,
+    certificate_path: &Path,
+    platform: Platform,
+) -> bool {
+    let Some(ssh) = ssh_binary() else {
+        return false;
+    };
+    let Some(output) = probe_identities(&ssh, account, host, platform.probe_budget()) else {
+        return false;
+    };
+    config_ready_from_output(&output, home, key_path, certificate_path)
 }
 
 fn expand_home(value: &str, home: &Path) -> PathBuf {
@@ -595,11 +638,17 @@ fn prepare(request: &LaunchRequest) -> CmdResult<PreparedLaunch> {
     let (known_hosts_action, known_hosts_pattern) =
         ensure_known_hosts(&known_hosts_path, &request.known_hosts_line)
             .map_err(|error| CommandError::coded(SSH_LOCAL_CONFIG_CODE, error))?;
-    let Some(tokens) = ssh_tokens(
-        Some((&request.key.key_path, &certificate_path)),
+    let managed = managed_config_ready(
+        &request.home,
         &request.account,
         &request.host,
-    ) else {
+        &request.key.key_path,
+        &certificate_path,
+        Platform::current(),
+    );
+    let explicit =
+        (!managed).then_some((request.key.key_path.as_path(), certificate_path.as_path()));
+    let Some(tokens) = ssh_tokens(explicit, &request.account, &request.host) else {
         return Err(CommandError::coded(
             SSH_UNSUPPORTED_ACCOUNT_CODE,
             "the login account or host cannot be passed to a shell safely",
@@ -760,6 +809,26 @@ mod tests {
                 "root@10.20.1.5",
             ]
         );
+    }
+
+    #[test]
+    fn bare_tokens_rely_on_the_managed_config() {
+        assert_eq!(ssh_tokens(None, "root", "10.20.1.5").unwrap(), vec!["ssh", "root@10.20.1.5"]);
+    }
+
+    #[test]
+    fn managed_config_must_name_both_the_key_and_the_certificate() {
+        let home = Path::new("/home/dev");
+        let key = Path::new("/home/dev/.ssh/id_rsa");
+        let certificate = Path::new("/home/dev/.ssh/warp-ztna/ticket-cert.pub");
+        let matching = "user root\nidentityfile ~/.ssh/id_rsa\ncertificatefile /home/dev/.ssh/warp-ztna/ticket-cert.pub\n";
+        assert!(config_ready_from_output(matching, home, key, certificate));
+        let other_certificate = "user root\nidentityfile /home/dev/.ssh/id_rsa\ncertificatefile /home/dev/.ssh/warp-ztna/other-cert.pub\n";
+        assert!(!config_ready_from_output(other_certificate, home, key, certificate));
+        let no_certificate = "user root\nidentityfile /home/dev/.ssh/id_rsa\n";
+        assert!(!config_ready_from_output(no_certificate, home, key, certificate));
+        let no_identity = "user root\ncertificatefile /home/dev/.ssh/warp-ztna/ticket-cert.pub\n";
+        assert!(!config_ready_from_output(no_identity, home, key, certificate));
     }
 
     #[test]
