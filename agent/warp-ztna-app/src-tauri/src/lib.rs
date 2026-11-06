@@ -20,6 +20,7 @@ mod api_oidc;
 mod coverage;
 mod error;
 mod i18n;
+mod instance_lock;
 mod liveness;
 #[cfg(target_os = "macos")]
 mod macos_chrome;
@@ -30,7 +31,9 @@ mod prefs;
 mod process;
 mod resources;
 mod service_config;
+mod ssh_config;
 mod ssh_login;
+mod ssh_sync;
 mod sso_tab;
 mod status_hub;
 
@@ -82,6 +85,8 @@ struct DesktopState {
     sso_busy: Arc<AtomicUsize>,
     pending_action: Arc<std::sync::Mutex<Option<String>>>,
     task: Arc<std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    ssh_sync: Arc<ssh_sync::SshSync>,
+    instance_lock: Arc<std::sync::Mutex<Option<std::fs::File>>>,
 }
 
 struct SsoBusyGuard(Arc<AtomicUsize>);
@@ -913,6 +918,9 @@ fn update_tray_resources(app: &AppHandle, payload: &serde_json::Value, lang: &st
         model.more = rows.more;
     }
     rebuild_tray(app);
+    if let Some(state) = app.try_state::<DesktopState>() {
+        state.ssh_sync.trigger();
+    }
     let handle = app.clone();
     let liveness_rows = rows.liveness;
     tauri::async_runtime::spawn(async move {
@@ -1050,6 +1058,7 @@ async fn acquire_api_session(
         return Ok(());
     }
     platform.api_auth.acquire_interactive().await.map_err(CommandError::api_session)?;
+    state.ssh_sync.trigger();
     if focus {
         focus_visible_main_window(&app);
     }
@@ -2153,6 +2162,11 @@ fn restart_app(app: AppHandle) {
     let handle = app.clone();
     log::info!("restart_app: restarting application");
     tauri::async_runtime::spawn(async move {
+        if let Some(state) = handle.try_state::<DesktopState>()
+            && let Ok(mut lock) = state.instance_lock.lock()
+        {
+            lock.take();
+        }
         handle.restart();
     });
 }
@@ -2178,6 +2192,23 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let config_dir = app.path().app_config_dir().ok();
+            let instance_lock = match config_dir.as_deref() {
+                Some(dir) => match instance_lock::acquire(dir, 50, Duration::from_millis(100)) {
+                    instance_lock::LockOutcome::Acquired(file) => Some(file),
+                    instance_lock::LockOutcome::Held(pid) => {
+                        log::info!(
+                            "another instance is already running (pid: {})",
+                            pid.as_deref().unwrap_or("unknown")
+                        );
+                        std::process::exit(0);
+                    }
+                    instance_lock::LockOutcome::Degraded(error) => {
+                        log::warn!("instance lock unavailable: {error}");
+                        None
+                    }
+                },
+                None => None,
+            };
             let reopen_once = config_dir.as_deref().is_some_and(|dir| {
                 let marker = dir.join(REOPEN_MARKER);
                 let exists = marker.exists();
@@ -2223,8 +2254,16 @@ pub fn run() {
                 sso_busy: Arc::new(AtomicUsize::new(0)),
                 pending_action: Arc::new(std::sync::Mutex::new(None)),
                 task: Arc::new(std::sync::Mutex::new(None)),
+                ssh_sync: Arc::new(ssh_sync::SshSync::new()),
+                instance_lock: Arc::new(std::sync::Mutex::new(instance_lock)),
             });
             log::info!("Warp ZTNA desktop application started (headless={headless})");
+
+            let sync_handle = app.handle().clone();
+            tauri::async_runtime::spawn(ssh_sync::run(sync_handle));
+            if let Some(state) = app.try_state::<DesktopState>() {
+                state.ssh_sync.trigger();
+            }
 
             let initial_snapshot = {
                 let state = app.state::<DesktopState>();

@@ -117,14 +117,14 @@ struct PreparedLaunch {
     known_hosts_pattern: Option<String>,
 }
 
-fn valid_account(account: &str) -> bool {
+pub(crate) fn valid_account(account: &str) -> bool {
     !account.is_empty()
         && account.len() <= ACCOUNT_MAX_CHARS
         && !account.starts_with('-')
         && account.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
-fn valid_host(host: &str) -> bool {
+pub(crate) fn valid_host(host: &str) -> bool {
     !host.is_empty()
         && host.len() <= HOST_MAX_CHARS
         && !host.starts_with('-')
@@ -231,7 +231,7 @@ fn sibling_public_key(key_path: &Path) -> Option<PathBuf> {
     Some(key_path.with_file_name(format!("{name}{PUBLIC_KEY_SUFFIX}")))
 }
 
-fn valid_request_id(value: &str) -> bool {
+pub(crate) fn valid_request_id(value: &str) -> bool {
     value.len() == 36
         && value.char_indices().all(|(index, character)| {
             if matches!(index, 8 | 13 | 18 | 23) {
@@ -251,7 +251,7 @@ fn usably_paired(key_path: &Path) -> bool {
     key_path.is_file() && sibling_public_key(key_path).is_some_and(|path| path.is_file())
 }
 
-fn scanned_public_key_paths(ssh_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn scanned_public_key_paths(ssh_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(ssh_dir) else {
         return Vec::new();
     };
@@ -276,7 +276,7 @@ fn scanned_public_key_paths(ssh_dir: &Path) -> Vec<PathBuf> {
     keys
 }
 
-fn fingerprint_of(key_path: &Path) -> Option<String> {
+pub(crate) fn fingerprint_of(key_path: &Path) -> Option<String> {
     let path = sibling_public_key(key_path)?;
     let text = fs::read_to_string(path).ok()?;
     let key = PublicKey::from_openssh(text.trim()).ok()?;
@@ -375,10 +375,9 @@ pub(crate) fn certificate_is_current(text: &str) -> bool {
 pub(crate) fn existing_certificate(path: &Path, serial: Option<&str>) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
     let certificate = Certificate::from_openssh(text.trim()).ok()?;
-    let serial = serial?;
-    let reusable = certificate.serial().to_string() == serial
-        && std::time::SystemTime::now() < certificate.valid_before_time();
-    reusable.then_some(text)
+    let serial_matches = serial.is_none_or(|serial| certificate.serial().to_string() == serial);
+    let current = std::time::SystemTime::now() < certificate.valid_before_time();
+    (serial_matches && current).then_some(text)
 }
 
 pub(crate) fn certificate_principals(text: &str) -> Option<Vec<String>> {
@@ -475,14 +474,14 @@ fn write_options() -> fs::OpenOptions {
     options
 }
 
-fn ensure_ssh_dir(ssh_dir: &Path) -> Result<(), String> {
+pub(crate) fn ensure_ssh_dir(ssh_dir: &Path) -> Result<(), String> {
     if ssh_dir.is_dir() {
         return Ok(());
     }
     ssh_dir_builder().create(ssh_dir).map_err(|error| error.to_string())
 }
 
-fn write_certificate(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_certificate(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         ensure_ssh_dir(parent)?;
     }
@@ -492,7 +491,7 @@ fn write_certificate(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_known_hosts(
+pub(crate) fn ensure_known_hosts(
     path: &Path,
     incoming: &str,
 ) -> Result<(KnownHostsAction, Option<String>), String> {
