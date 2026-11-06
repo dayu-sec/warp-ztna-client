@@ -166,6 +166,7 @@ pub struct ApiConfig {
     pub database_url: SecretString,
     pub oidc_issuer: String,
     pub oidc_audience: String,
+    pub oidc_admin_client_id: String,
     pub portal_url: Option<String>,
     pub allowed_origins: Vec<String>,
     pub local_session_secure: bool,
@@ -382,6 +383,7 @@ impl ApiConfig {
             database_url: SecretString::from(required("WARP_DATABASE_URL")?),
             oidc_issuer,
             oidc_audience,
+            oidc_admin_client_id: value("WARP_OIDC_ADMIN_CLIENT_ID", "warp-ztna-admin"),
             portal_url: optional_http_url("WARP_PORTAL_URL", optional("WARP_PORTAL_URL"))?,
             allowed_origins: parse_allowed_origins(
                 "WARP_ALLOWED_ORIGINS",
