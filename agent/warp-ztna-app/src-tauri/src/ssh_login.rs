@@ -110,9 +110,16 @@ pub(crate) struct LaunchRequest {
     pub(crate) known_hosts_line: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandMode {
+    Launch,
+    Copy,
+}
+
 struct PreparedLaunch {
     certificate_path: PathBuf,
     tokens: Vec<String>,
+    copy_tokens: Vec<String>,
     known_hosts_action: KnownHostsAction,
     known_hosts_pattern: Option<String>,
 }
@@ -146,6 +153,23 @@ fn ssh_tokens(explicit: Option<(&Path, &Path)>, account: &str, host: &str) -> Op
     }
     tokens.push(format!("{account}@{host}"));
     Some(tokens)
+}
+
+fn command_tokens(
+    mode: CommandMode,
+    managed: bool,
+    key_path: &Path,
+    certificate_path: &Path,
+    account: &str,
+    host: &str,
+) -> Option<(Vec<String>, Vec<String>)> {
+    let copy_tokens = ssh_tokens(Some((key_path, certificate_path)), account, host)?;
+    let tokens = if mode == CommandMode::Launch && managed {
+        ssh_tokens(None, account, host)?
+    } else {
+        copy_tokens.clone()
+    };
+    Some((tokens, copy_tokens))
 }
 
 pub(crate) fn client_available() -> bool {
@@ -222,12 +246,16 @@ fn parse_path_directives(output: &str, directive: &str, home: &Path) -> Vec<Path
 }
 
 fn same_file(left: &Path, right: &Path) -> bool {
-    let normalize = |path: &Path| {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned()
-    };
+    let normalize = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let left = normalize(left);
     let right = normalize(right);
-    if cfg!(windows) { left.eq_ignore_ascii_case(&right) } else { left == right }
+    if cfg!(windows) {
+        let left = left.to_string_lossy().replace('/', "\\");
+        let right = right.to_string_lossy().replace('/', "\\");
+        left.eq_ignore_ascii_case(&right)
+    } else {
+        left == right
+    }
 }
 
 fn config_ready_from_output(
@@ -618,7 +646,7 @@ fn open_terminal(platform: Platform, tokens: &[String]) -> Result<(), String> {
     }
 }
 
-fn prepare(request: &LaunchRequest) -> CmdResult<PreparedLaunch> {
+fn prepare(request: &LaunchRequest, mode: CommandMode) -> CmdResult<PreparedLaunch> {
     if !certificate_is_current(&request.certificate) {
         return Err(CommandError::coded(
             SSH_CERT_NOT_READY_CODE,
@@ -638,28 +666,40 @@ fn prepare(request: &LaunchRequest) -> CmdResult<PreparedLaunch> {
     let (known_hosts_action, known_hosts_pattern) =
         ensure_known_hosts(&known_hosts_path, &request.known_hosts_line)
             .map_err(|error| CommandError::coded(SSH_LOCAL_CONFIG_CODE, error))?;
-    let managed = managed_config_ready(
-        &request.home,
-        &request.account,
-        &request.host,
+    let managed = mode == CommandMode::Launch
+        && managed_config_ready(
+            &request.home,
+            &request.account,
+            &request.host,
+            &request.key.key_path,
+            &certificate_path,
+            Platform::current(),
+        );
+    let Some((tokens, copy_tokens)) = command_tokens(
+        mode,
+        managed,
         &request.key.key_path,
         &certificate_path,
-        Platform::current(),
-    );
-    let explicit =
-        (!managed).then_some((request.key.key_path.as_path(), certificate_path.as_path()));
-    let Some(tokens) = ssh_tokens(explicit, &request.account, &request.host) else {
+        &request.account,
+        &request.host,
+    ) else {
         return Err(CommandError::coded(
             SSH_UNSUPPORTED_ACCOUNT_CODE,
             "the login account or host cannot be passed to a shell safely",
         ));
     };
-    Ok(PreparedLaunch { certificate_path, tokens, known_hosts_action, known_hosts_pattern })
+    Ok(PreparedLaunch {
+        certificate_path,
+        tokens,
+        copy_tokens,
+        known_hosts_action,
+        known_hosts_pattern,
+    })
 }
 
 pub(crate) fn prepare_dto(request: &LaunchRequest) -> CmdResult<SshPrepareDto> {
-    let prepared = prepare(request)?;
-    let command = shell_join(&prepared.tokens);
+    let prepared = prepare(request, CommandMode::Copy)?;
+    let command = shell_join(&prepared.copy_tokens);
     log::info!("ssh_prepare: {command}");
     Ok(SshPrepareDto {
         command,
@@ -670,7 +710,7 @@ pub(crate) fn prepare_dto(request: &LaunchRequest) -> CmdResult<SshPrepareDto> {
 
 pub(crate) fn launch(request: &LaunchRequest) -> CmdResult<SshLaunchDto> {
     let platform = Platform::current();
-    let prepared = prepare(request)?;
+    let prepared = prepare(request, CommandMode::Launch)?;
     let mut status = LaunchStatus::CopyOnly;
     let mut launch_error = None;
     match open_terminal(platform, &prepared.tokens) {
@@ -682,7 +722,7 @@ pub(crate) fn launch(request: &LaunchRequest) -> CmdResult<SshLaunchDto> {
         platform,
         host: request.host.clone(),
         account: request.account.clone(),
-        command: shell_join(&prepared.tokens),
+        command: shell_join(&prepared.copy_tokens),
         launch_error,
         key_path: request.key.key_path.to_string_lossy().into_owned(),
         certificate_path: prepared.certificate_path.to_string_lossy().into_owned(),
@@ -814,6 +854,47 @@ mod tests {
     #[test]
     fn bare_tokens_rely_on_the_managed_config() {
         assert_eq!(ssh_tokens(None, "root", "10.20.1.5").unwrap(), vec!["ssh", "root@10.20.1.5"]);
+    }
+
+    #[test]
+    fn copy_commands_stay_explicit_when_the_managed_config_is_ready() {
+        let key = Path::new("/home/dev/.ssh/id_work");
+        let certificate = Path::new("/home/dev/.ssh/warp-ztna/ticket-cert.pub");
+        let explicit = ssh_tokens(Some((key, certificate)), "root", "10.20.1.5").unwrap();
+        let (tokens, copy_tokens) =
+            command_tokens(CommandMode::Copy, true, key, certificate, "root", "10.20.1.5").unwrap();
+        assert_eq!(tokens, explicit);
+        assert_eq!(copy_tokens, explicit);
+    }
+
+    #[test]
+    fn launch_commands_use_the_managed_config_only_when_it_is_ready() {
+        let key = Path::new("/home/dev/.ssh/id_work");
+        let certificate = Path::new("/home/dev/.ssh/warp-ztna/ticket-cert.pub");
+        let explicit = ssh_tokens(Some((key, certificate)), "root", "10.20.1.5").unwrap();
+        let (managed, copy_tokens) =
+            command_tokens(CommandMode::Launch, true, key, certificate, "root", "10.20.1.5")
+                .unwrap();
+        assert_eq!(managed, ssh_tokens(None, "root", "10.20.1.5").unwrap());
+        assert_eq!(copy_tokens, explicit);
+        let (fallback, copy_tokens) =
+            command_tokens(CommandMode::Launch, false, key, certificate, "root", "10.20.1.5")
+                .unwrap();
+        assert_eq!(fallback, explicit);
+        assert_eq!(copy_tokens, explicit);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_match_across_separators_and_case() {
+        assert!(same_file(
+            Path::new(r"C:\Users\dev\.ssh\id_rsa"),
+            Path::new("C:/Users/dev/.ssh/id_rsa")
+        ));
+        assert!(same_file(
+            Path::new(r"C:\Users\dev\.ssh\id_rsa"),
+            Path::new(r"c:\users\dev\.ssh\ID_RSA")
+        ));
     }
 
     #[test]
