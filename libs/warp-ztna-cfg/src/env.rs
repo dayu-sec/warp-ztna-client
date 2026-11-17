@@ -46,6 +46,13 @@ pub const DEFAULT_AUDIT_RETENTION_DAYS: i64 = 90;
 
 pub const DEFAULT_SYNC_HISTORY_RETENTION_DAYS: i64 = 90;
 
+pub const DEFAULT_NETBIRD_METRICS_URL: &str =
+    "http://netbird-server-metrics.netbird.svc.cluster.local:9090/metrics";
+
+pub const DEFAULT_OBSERVABILITY_SAMPLE_INTERVAL_SECONDS: u64 = 30;
+
+pub const DEFAULT_OBSERVABILITY_RETENTION_DAYS: i64 = 7;
+
 /// Default bind address of the `warp-ztna-ssh-ca` adapter.
 pub const DEFAULT_SSH_CA_BIND_ADDR: &str = "127.0.0.1:8091";
 
@@ -243,10 +250,18 @@ pub struct OrchConfig {
     pub authz_reconcile_interval: Duration,
     pub audit_retention_days: i64,
     pub sync_history_retention_days: i64,
+    pub observability: Option<ObservabilityConfig>,
     pub authz_request_timeout: Duration,
     pub ssh_ca_base_url: String,
     pub ssh_ca_request_timeout: Duration,
     pub posture_check: Option<PostureCheckConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObservabilityConfig {
+    pub netbird_metrics_url: String,
+    pub sample_interval: Duration,
+    pub retention_days: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +316,21 @@ impl OrchConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let identity_source_enabled: bool = parse("WARP_IDENTITY_SOURCE_ENABLED", "false")?;
         let identity_source = identity_source_config(identity_source_enabled)?;
+        let observability = if parse_bool("WARP_OBSERVABILITY_ENABLED", false)? {
+            Some(ObservabilityConfig {
+                netbird_metrics_url: value("WARP_NETBIRD_METRICS_URL", DEFAULT_NETBIRD_METRICS_URL),
+                sample_interval: parse_duration(
+                    "WARP_OBSERVABILITY_SAMPLE_INTERVAL_SECONDS",
+                    DEFAULT_OBSERVABILITY_SAMPLE_INTERVAL_SECONDS,
+                )?,
+                retention_days: parse_positive_seconds(
+                    "WARP_OBSERVABILITY_RETENTION_DAYS",
+                    DEFAULT_OBSERVABILITY_RETENTION_DAYS,
+                )?,
+            })
+        } else {
+            None
+        };
         Ok(Self {
             netbird_naming: netbird_managed_naming()?,
             bind_addr: parse("WARP_ORCH_BIND_ADDR", "127.0.0.1:8090")?,
@@ -353,6 +383,7 @@ impl OrchConfig {
                 "WARP_SYNC_HISTORY_RETENTION_DAYS",
                 DEFAULT_SYNC_HISTORY_RETENTION_DAYS,
             )?,
+            observability,
             authz_request_timeout: parse_duration(
                 "WARP_AUTHZ_REQUEST_TIMEOUT_SECONDS",
                 DEFAULT_AUTHZ_REQUEST_TIMEOUT_SECONDS,
