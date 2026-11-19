@@ -190,6 +190,8 @@ pub struct ApiConfig {
     pub max_access_request_duration_seconds: i64,
     pub client_pkg_base_url: String,
     pub client_pkg_latest_release_url: Option<String>,
+    pub license_pubkey: Option<String>,
+    pub license_pubkey_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +257,8 @@ pub struct OrchConfig {
     pub ssh_ca_base_url: String,
     pub ssh_ca_request_timeout: Duration,
     pub posture_check: Option<PostureCheckConfig>,
+    pub license_pubkey: Option<String>,
+    pub license_pubkey_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -394,6 +398,8 @@ impl OrchConfig {
                 DEFAULT_SSH_CA_REQUEST_TIMEOUT_SECONDS,
             )?,
             posture_check: parse_posture_check(optional("WARP_POLICY_POSTURE_CHECK_JSON"))?,
+            license_pubkey: optional("WARP_LICENSE_PUBKEY"),
+            license_pubkey_file: optional("WARP_LICENSE_PUBKEY_FILE"),
         })
     }
 }
@@ -457,6 +463,8 @@ impl ApiConfig {
                 optional("WARP_CLIENT_PKG_LATEST_RELEASE_URL").as_deref(),
                 DEFAULT_CLIENT_PKG_LATEST_RELEASE_URL,
             ),
+            license_pubkey: optional("WARP_LICENSE_PUBKEY"),
+            license_pubkey_file: optional("WARP_LICENSE_PUBKEY_FILE"),
         })
     }
 }
