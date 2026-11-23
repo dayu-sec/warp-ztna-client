@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-WARP_VERSION="0.1.24"
+WARP_VERSION="0.1.25"
 BASE_URL="https://github.com/dayu-sec/warp-ztna-client/releases/download"
 VERSION="$WARP_VERSION"
 DRY_RUN=0
