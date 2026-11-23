@@ -35,6 +35,12 @@ import {
   type LivenessState,
 } from "../lib/resourceLiveness";
 import { ssoSignInUrl } from "../lib/ssoUrl";
+import {
+  armSessionExpiry,
+  normalizeDaemonState,
+  shouldMarkSessionExpired,
+  type MainGate,
+} from "../lib/sessionState";
 import type { UiConn } from "../types/ui";
 
 const CONNECT_BURST_MS = [1_500, 4_000, 8_000];
@@ -116,7 +122,7 @@ export function useAgent(
   const [sshBusyKey, setSshBusyKey] = useState<string | null>(null);
   const [sshFallback, setSshFallback] = useState<SshLaunchPlan | null>(null);
   const [windowHidden, setWindowHidden] = useState(false);
-  const [mainGate, setMainGate] = useState<"pending" | "welcome" | "home">("pending");
+  const [mainGate, setMainGate] = useState<MainGate>("pending");
   const [daemonDown, setDaemonDown] = useState(false);
   const [apiBlocked, setApiBlocked] = useState<ApiProbe | null>(null);
   const [probeRun, setProbeRun] = useState(0);
@@ -153,7 +159,9 @@ export function useAgent(
   const startSsoRef = useRef(startSso);
   startSsoRef.current = startSso;
   const connectUntilRef = useRef(0);
+  const expiryArmedRef = useRef(false);
   const beginConnectWindow = useCallback(() => {
+    expiryArmedRef.current = false;
     connectUntilRef.current = Date.now() + CONNECT_GRACE_MS;
   }, []);
   const endConnectWindow = useCallback(() => {
@@ -162,14 +170,21 @@ export function useAgent(
 
   const applyStatus = useCallback((status: AgentStatus, signed: boolean, leadSecs = warningLeadSecs) => {
     const connectPending = Date.now() < connectUntilRef.current;
+    expiryArmedRef.current = armSessionExpiry(expiryArmedRef.current, status.state);
+    const daemonState = normalizeDaemonState(status.state, connectPending, connectionRef.current);
     const settled =
-      status.state === "connected" ||
-      status.state === "needs_login" ||
-      status.state === "error";
-    const idle = status.state === "disconnected" || status.state === "unknown";
+      daemonState === "connected" ||
+      daemonState === "needs_login" ||
+      daemonState === "error";
+    const idle = daemonState === "disconnected" || daemonState === "unknown";
     if (settled || (idle && !connectPending)) endConnectWindow();
     setConnection((prev) => {
-      const next = nextConnection(prev, status, signed, connectPending);
+      const next = nextConnection(
+        prev,
+        { state: daemonState, stream: status.stream },
+        signed,
+        connectPending,
+      );
       return prev === next ? prev : next;
     });
     if (status.hostname) {
@@ -543,7 +558,7 @@ export function useAgent(
   }, [mainGate, signedIn, connected, userEmail, loadUserEmail, resourcesOkRun]);
 
   useEffect(() => {
-    if (mainGate !== "home" || connection !== "needs-login") return;
+    if (!shouldMarkSessionExpired(mainGate, connection, expiryArmedRef.current)) return;
     setSessionExpired(true);
     setMainGate("welcome");
   }, [mainGate, connection]);
