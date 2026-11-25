@@ -25,6 +25,7 @@ import {
   apiLoginMessageKey,
   isApiLoginInProgress,
   isApiLoginRequired,
+  retryWhileLoginInProgress,
 } from "../lib/apiLogin";
 import { nextConnection } from "../lib/connState";
 import { isDaemonDown, isDaemonLive } from "../lib/daemonDown";
@@ -271,7 +272,7 @@ export function useAgent(
     if (apiSessionPromiseRef.current) return apiSessionPromiseRef.current;
     const run = (async () => {
       try {
-        await native.acquireApiSession(focus);
+        await retryWhileLoginInProgress(() => native.acquireApiSession(focus));
         return { ok: true };
       } catch (cause) {
         return { ok: false, cause };

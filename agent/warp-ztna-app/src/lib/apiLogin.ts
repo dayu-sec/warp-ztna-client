@@ -50,3 +50,22 @@ export function apiLoginMessageKey(cause: unknown): string | null {
       return null;
   }
 }
+
+export const API_SESSION_BUSY_RETRY_MS = 400;
+
+export const API_SESSION_BUSY_RETRY_LIMIT = 8;
+
+export async function retryWhileLoginInProgress<T>(
+  run: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  limit = API_SESSION_BUSY_RETRY_LIMIT,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (cause) {
+      if (!isApiLoginInProgress(cause) || attempt >= limit) throw cause;
+      await sleep(API_SESSION_BUSY_RETRY_MS);
+    }
+  }
+}

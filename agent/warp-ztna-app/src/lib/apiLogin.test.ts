@@ -11,6 +11,8 @@ import {
   isApiLoginInProgress,
   isApiLoginRequired,
   isApiLoginCancelled,
+  API_SESSION_BUSY_RETRY_MS,
+  retryWhileLoginInProgress,
 } from "./apiLogin.ts";
 
 test("classifies each stable API login code", () => {
@@ -47,4 +49,53 @@ test("maps stable codes to overlay copy keys", () => {
   );
   assert.equal(apiLoginMessageKey({ code: API_LOGIN_REQUIRED_CODE }), null);
   assert.equal(apiLoginMessageKey({ code: API_LOGIN_CANCELLED_CODE }), null);
+});
+
+test("retries while a concurrent API sign-in holds the lock", async () => {
+  let calls = 0;
+  const sleeps: number[] = [];
+  const token = await retryWhileLoginInProgress(
+    async () => {
+      calls += 1;
+      if (calls < 3) throw { code: API_LOGIN_IN_PROGRESS_CODE };
+      return "token";
+    },
+    async (ms) => {
+      sleeps.push(ms);
+    },
+  );
+  assert.equal(token, "token");
+  assert.equal(calls, 3);
+  assert.deepEqual(sleeps, [API_SESSION_BUSY_RETRY_MS, API_SESSION_BUSY_RETRY_MS]);
+});
+
+test("does not retry failures that are not a concurrent sign-in", async () => {
+  let calls = 0;
+  await assert.rejects(
+    retryWhileLoginInProgress(
+      async () => {
+        calls += 1;
+        throw { code: API_LOGIN_REQUIRED_CODE };
+      },
+      async () => {},
+    ),
+    (cause: unknown) => (cause as { code?: string }).code === API_LOGIN_REQUIRED_CODE,
+  );
+  assert.equal(calls, 1);
+});
+
+test("stops retrying at the limit", async () => {
+  let calls = 0;
+  await assert.rejects(
+    retryWhileLoginInProgress(
+      async () => {
+        calls += 1;
+        throw { code: API_LOGIN_IN_PROGRESS_CODE };
+      },
+      async () => {},
+      2,
+    ),
+    (cause: unknown) => (cause as { code?: string }).code === API_LOGIN_IN_PROGRESS_CODE,
+  );
+  assert.equal(calls, 3);
 });
